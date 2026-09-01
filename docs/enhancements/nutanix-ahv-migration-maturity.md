@@ -33,12 +33,12 @@ see-also:
    are not a backup vendor, we recommend reaching out to your backup
    provider,"* which reads as a partner-program soft-gate rather than a
    technical restriction. This needs a direct conversation with Nutanix
-   (partner/API access, licensing, support commitments) before Phase 3
+   (partner/API access, licensing, support commitments) before Phase 5
    (warm migration) can be scoped as `implementable`. See
-   [Warm migration / CBT feasibility](#gap-tier-3-warm-migration--change-tracking).
+   [Warm migration / CBT feasibility](#gap-tier-4-warm-migration--change-tracking).
 2. **Can virt-v2v's `-i disk` input mode run against a network-attached
    block device (nbdkit `curl`/`ssh` plugin) rather than a fully-downloaded
-   local file?** This determines whether Phase 2 (conversion pod) can reuse
+   local file?** This determines whether Phase 4 (conversion pod) can reuse
    the existing per-disk catalog-image HTTP endpoint directly, or whether it
    requires downloading the full image to local/ephemeral storage first
    (which would regress the "no double-copy" property CDI HTTP import
@@ -51,12 +51,29 @@ see-also:
    `Categories` field, and no code in
    `pkg/controller/provider/container/nutanix/*.go` requests category data,
    so this is currently unverified rather than confirmed absent.
-4. What is the actual minimum supported Prism Central version for this
-   provider today? The CRT API requires `pc.2024.3+`; if Forklift's Nutanix
-   support matrix intends to cover older Prism Central/Element deployments,
-   warm migration would need to be gated behind a Prism version check,
-   mirroring how oVirt's direct-LUN support is gated behind
-   `engine >= 4.5.2.1` (see `ovirt-lun-migration.md`).
+4. **What is the actual, GA-supported minimum Prism Central/AOS version for
+   the `compute-changed-regions` endpoint specifically** — not just the
+   `dataprotection` namespace it lives in? Evidence collected so far is
+   inconsistent: Nutanix's January 2025 blog introducing Changed Regions
+   Tracking cites `pc.2024.3+`; the current (as of this research) v4 API
+   reference matrix lists the `dataprotection` namespace as GA starting at
+   PC 7.3 / AOS 7.3; and community forum posts show the endpoint in active
+   use against PC 7.5 / AOS 11.0.0.1. Nutanix's v4 versioning scheme
+   explicitly distinguishes EA (`.aN` suffix) and RC (`.bN` suffix) stages
+   from GA, and states *"EA APIs can be dropped or changed at any time
+   without prior notice"* and *"RC ... not recommended for production
+   use."* Namespace-level GA does not by itself prove the specific
+   `compute-changed-regions` endpoint has left EA/RC — this needs to be
+   confirmed against Nutanix's dataprotection v4 API changelog/release
+   notes (or directly with Nutanix) before gating any implementation on a
+   specific version floor, mirroring how oVirt's direct-LUN support is
+   gated behind `engine >= 4.5.2.1` (see `ovirt-lun-migration.md`).
+5. **What is Forklift's position on the Nutanix legacy-API deprecation
+   timeline** (see [Gap Tier 0](#gap-tier-0-legacy-prism-api-deprecation-time-bound))?
+   Specifically: should the v2.0/v3 → v4 migration for existing,
+   already-shipped inventory-collection and image-transfer code be treated
+   as its own time-boxed project distinct from this maturity roadmap, and
+   who owns tracking Nutanix's release calendar against it?
 
 ## Summary
 
@@ -68,10 +85,12 @@ through CDI's HTTP `DataVolume` importer. This is a working cold-migration
 path, but it is materially less mature than the vSphere adapter, which is the
 project's most-hardened provider and the de facto maturity bar. This document
 inventories every capability gap between the two adapters, backed by direct
-code comparison and (for the two gaps whose feasibility isn't decidable from
-this codebase alone) external research into Nutanix's own API surface. It
-proposes a phased roadmap to close the gaps, ordered by risk/effort and by
-what blocks what.
+code comparison and (for the gaps whose feasibility isn't decidable from this
+codebase alone) external research into Nutanix's own API surface and
+published deprecation schedule. It proposes a phased roadmap to close the
+gaps, ordered by risk/effort and by what blocks what — and separately flags a
+newly-identified, dated risk: parts of the *already-shipped* Nutanix adapter
+depend on Prism API versions Nutanix has now scheduled for removal.
 
 ## Motivation
 
@@ -83,7 +102,11 @@ performs via virt-v2v, and it is entirely absent from the project's own
 `docs/compatibility/*.md` feature matrices. A user migrating a Windows VM
 without pre-installed virtio drivers, or a VM with an unmapped subnet, gets
 no early warning today — the plan validates as "ready" and then fails (or
-worse, silently produces an unbootable VM) during execution.
+worse, silently produces an unbootable VM) during execution. Separately,
+Nutanix has published a dated end-of-life notice for the Prism API versions
+(v0.8/v1/v2/v3) that most of the existing Nutanix inventory collector and
+Prism-Element disk-transfer path still use — a maturity roadmap that ignores
+this would be solving yesterday's problem while a real deadline approaches.
 
 ### Goals
 
@@ -92,7 +115,9 @@ worse, silently produces an unbootable VM) during execution.
 - Distinguish gaps that are pure "wire it up" work (data already collected,
   logic already exists as a reusable helper) from gaps that require new
   inventory data, new Nutanix API integration, or upstream virt-v2v changes.
-- Resolve (or explicitly flag as needing external validation) the two open
+- Identify and date any risk to the adapter's *current* functionality from
+  Nutanix's own platform roadmap, not just gaps relative to vSphere.
+- Resolve (or explicitly flag as needing external validation) the open
   feasibility questions that block realistic planning: warm migration and
   guest customization.
 - Propose a phased delivery plan with dependencies made explicit, so later
@@ -102,14 +127,14 @@ worse, silently produces an unbootable VM) during execution.
 
 - This document does not propose closing every gap in one release. It is a
   roadmap, not a single implementation plan.
-- It does not commit to warm migration shipping — Phase 3 is gated on the
+- It does not commit to warm migration shipping — Phase 5 is gated on the
   open questions above and may conclude "not currently feasible."
 - It does not cover UI/console work (the `forklift-console-plugin` repo is
   out of scope here); this document is scoped to the `kubevirt/forklift`
   controller, CLI, and inventory layers.
 - It does not redesign the existing cold-migration disk-transfer mechanism
-  (catalog image + CDI HTTP import), which works today and is out of scope
-  except where guest customization (Phase 2) requires touching it.
+  (catalog image + CDI HTTP import) beyond what Tier 0's API migration and
+  Tier 2's guest customization require.
 
 ## Background
 
@@ -135,6 +160,14 @@ worse, silently produces an unbootable VM) during execution.
 - **Host handler** (`pkg/controller/host/handler/nutanix/handler.go`): an
   explicit no-op, on the reasoning that AHV has no ESXi-style per-host
   object model.
+- **Inventory collector** (`pkg/controller/provider/container/nutanix/`):
+  lists clusters, hosts, VMs, and subnets via `listAllV3` (Prism `v3` REST
+  kind API); lists Prism Element storage containers via `v2.0`
+  (`storageContainersV2Path`); lists Prism Element images via the `v3`
+  `image` kind; detects Prism Central via a `v3` self-describing endpoint
+  (`prismCentralPath`). Only Prism Central images (`vmm v4.0`) and Prism
+  Central storage containers (`clustermgmt v4.0`) have already been ported
+  to v4.
 - **Inventory model** (`pkg/controller/provider/model/nutanix/model.go`):
   `VM` has `GuestOSID`, `GuestOSVersion`, `GuestToolsEnabled/Mounted/
   Reachable/Version`, `Categories map[string]string` (present in the struct
@@ -160,8 +193,74 @@ coverage (`validator_test.go`, `builder_test.go`, `scheduler_test.go`,
 
 ## Proposal
 
-The gaps are grouped into five tiers, ordered by a combination of risk,
-effort, and whether the data/API needed to close them is already available.
+The gaps are grouped into six tiers, numbered 0–5. Tier 0 is distinct from
+the rest: it is not a maturity gap relative to vSphere, but a dated,
+external risk to code that already ships today. Tiers 1–5 retain the
+original vSphere-parity framing, ordered by a combination of risk, effort,
+and whether the data/API needed to close them is already available.
+
+### Gap Tier 0: Legacy Prism API deprecation (time-bound)
+
+Nutanix published an End-of-Life bulletin (initial version December 5,
+2024; updated June 17, 2026) for **Legacy API versions v0.8, v1, v2, and
+v3** across Prism Element and Prism Central. The dated milestones:
+
+| Milestone | Date |
+|---|---|
+| End-of-Support-Life announcement | Dec 5, 2024 |
+| End-of-General-Availability (last AOS/PC release still containing legacy APIs) | Aligned with the AOS & PC release targeted for **Q2 CY2027** |
+| Phased removal begins (legacy APIs and dependent CLIs/UIs start being removed from PC/PE) | Starting with the **Q4 CY2027** release |
+| Last date of support | Aligned with the EOSL date of that Q2 CY2027 release under Nutanix's standard support-lifecycle policy (i.e., support continues for that release per normal EOSL terms, extending beyond the Q4 CY2027 removal-start date for customers who stay on it) |
+
+**Source:** Nutanix "End of Life Announcement Bulletin - Legacy APIs
+versions v0.8, v1, v2, and v3 for Prism" (PDF,
+`download.nutanix.com/misc/LegacyAPI-EOLNotification.pdf`).
+
+This directly affects code shipping in this repository **today**, not just
+proposed new work. Confirmed via grep of the current tree:
+
+- `pkg/controller/provider/container/nutanix/client.go` — cluster, host, VM,
+  and subnet inventory collection all go through `listAllV3[...]` (the
+  legacy `v3` REST kind API): `listAllV3[clusterEntity](r, "cluster", ...)`,
+  `listAllV3[hostEntity](r, "host", ...)`, `listAllV3[vmEntity](r, "vm",
+  ...)`, `listAllV3[networkEntity](r, "subnet", ...)`.
+- `pkg/controller/provider/container/nutanix/image_api.go` — Prism Element
+  image listing uses the legacy `v3` `"image"` kind
+  (`listImagesElement`/`listAllV3[imageEntity]`).
+- `pkg/controller/provider/container/nutanix/prism.go` /
+  `storage_api.go` — Prism Element storage-container listing uses
+  `storageContainersV2Path = "/api/nutanix/v2.0/storage_containers"`.
+- `pkg/controller/provider/container/nutanix/prism.go` /
+  `pkg/controller/plan/adapter/nutanix/client.go` — Prism-mode
+  auto-detection probes `prismCentralPath = "/api/nutanix/v3/
+  prism_central"`.
+- `pkg/controller/plan/adapter/nutanix/builder.go` — the Prism Element
+  cold-migration disk-download path builds URLs against the legacy `v3`
+  image-file endpoint (`/api/nutanix/v3/images/%s/file`), and
+  `clusterExternalIP` (used to rewrite Prism Central download redirects to
+  the cluster VIP) calls `ListV3[Cluster]`.
+
+Only two paths have already been ported to `v4`: Prism Central image
+listing/creation (`vmm v4.0/content/images`, `image_v4.go`) and Prism
+Central storage-container listing (`clustermgmt v4.0/config/
+storage-containers`, `storage_api.go`). Everything else — the entire VM/
+host/cluster/subnet inventory collector, and the whole Prism Element
+disk-transfer path — is on APIs Nutanix has now dated for removal.
+
+**Why this matters for sequencing:** unlike Tiers 1–5, this has an external
+deadline that isn't under this project's control, and it touches the same
+client/collector code that several later tiers (Tier 1's `StorageMapped`/
+`NetworksMapped`, Tier 4's `MaintenanceMode`, Tier 3's category collection)
+will also need to modify. Doing the legacy-API migration first avoids
+rebasing that other work on soon-to-be-replaced client code.
+
+**Estimated effort:** medium — this is a systematic client-layer port
+(v3 → v4 for cluster/host/VM/subnet listing and Prism Element image
+handling; v2.0 → v4 for Prism Element storage containers), not new feature
+design. The runway (last-GA release ~Q2 CY2027, phased removal starting
+~Q4 CY2027, both roughly a year or more out from this document's writing)
+is real but not immediate, so this should be scheduled deliberately rather
+than treated as a fire drill — see Open Question #5.
 
 ### Gap Tier 1: Validator correctness
 
@@ -179,7 +278,7 @@ that vSphere already uses.
 | `InvalidDiskSizes` | `validator.go:83-86`, stub | `Disk.DiskSizeBytes` (used in `builder.go:749`) | flags disk files with `capacity <= 0` |
 | `MacConflicts` | `validator.go:88-91`, stub | `NIC.MACAddress` (used in `builder.go:342`) + shared `planbase.CheckMacConflicts` helper | checks source MACs against destination inventory |
 | `GuestToolsInstalled` | `validator.go:98-100`, hardcoded `true` | `VM.GuestToolsEnabled/Mounted/Reachable/Version` — collected, currently unused anywhere | checks VMware Tools status when VM is powered on |
-| `PVCNameTemplate` | `validator.go:93-96`, stub | `Disk.UUID` covers the base case; `WinDriveLetter` needs guest-agent data (see Tier 4) | builds `PVCNameTemplateData` per disk, validates via shared `planbase.ValidatePVCNameTemplate` |
+| `PVCNameTemplate` | `validator.go:93-96`, stub | `Disk.UUID` covers the base case; `WinDriveLetter` needs guest-agent data (see Tier 3) | builds `PVCNameTemplateData` per disk, validates via shared `planbase.ValidatePVCNameTemplate` |
 
 `MaintenanceMode` is a partial exception: vSphere checks a real
 `Host.InMaintenanceMode` boolean, but the Nutanix `Host` model only has a
@@ -188,99 +287,13 @@ values to a boolean first (a small model/collector change, not just wiring),
 and possibly confirming the Prism API even surfaces this per-host.
 
 **Estimated effort:** small — a few days per method, mostly following the
-vSphere pattern and reusing `planbase` helpers. This tier should ship first
-and independently of every other tier; it has no dependency on open
-questions.
+vSphere pattern and reusing `planbase` helpers. This tier has no dependency
+on the open questions, but does touch the same collector client Tier 0
+migrates — see Proposed Phasing below for sequencing.
 
-### Gap Tier 2: Guest customization (conversion pod)
+### Gap Tier 2: Feature parity
 
-vSphere's disk copy for cold migrations can route through a virt-v2v
-conversion pod (`PodEnvironment`, `builder.go:202-312` in the vSphere
-adapter) that performs in-guest customization: virtio driver injection,
-`/etc/fstab`/network config rewriting for static-IP preservation, and
-LUKS/NBDE disk decryption. Nutanix has none of this — `PodEnvironment`
-(`builder.go:822-824`) is a stub returning `nil, nil`, `ConversionPodConfig`
-returns an empty result, and `builder.go:772` carries an explicit TODO:
-*"remove this when Nutanix has a conversion step."*
-
-**Practical consequence:** an AHV guest without virtio drivers pre-installed
-will not boot on KubeVirt after a Forklift migration today. This is the
-single biggest gap standing between "works in a lab with virtio-ready
-images" and general production readiness.
-
-virt-v2v itself is not inherently vSphere-specific — per
-`docs/use-of-virt-v2v-in-forklift.md`, it supports an `-i disk` local-file
-input mode (`virt-v2v -i disk disk.img -o kubevirt [...]`), which is
-architecture-agnostic: it just needs a block device or file, not a vCenter
-connection. Nutanix already produces exactly that shape of artifact — a
-disk image reachable over HTTP via the catalog-image mechanism
-(`elementHTTPSource`/`centralHTTPSource` in `builder.go`). The open question
-(#2 above) is whether that HTTP source can be presented to virt-v2v as a
-block device via nbdkit's `curl` plugin (streaming, no full download) or
-whether it requires downloading the full image into pod-local storage first
-— which works but loses the "single copy" property CDI HTTP import
-currently has, and would need a temp-storage strategy analogous to the
-existing `ConversionTempStorageClass`/`ConversionTempStorageSize` plan
-fields.
-
-**Estimated effort:** large, and effort is not the main uncertainty — the
-open question above is. This should start with a virt-v2v spike (Open
-Question #2), not a full implementation commitment.
-
-### Gap Tier 3: Warm migration / change tracking
-
-vSphere's warm migration is a real precopy/checkpoint loop backed by CBT:
-`GetSnapshotDeltas` calls VMware's `QueryChangedDiskAreas` API to fetch
-changed disk regions between snapshot checkpoints. Nutanix's `client.go`
-already declares the matching interface methods (`CreateSnapshot`,
-`RemoveSnapshot`, `GetSnapshotDeltas`, `SetCheckpoints`,
-`CheckSnapshotReady`, `CheckSnapshotRemove`, `client.go:268-297`), but every
-one is a literal no-op today, and `Validator.WarmMigration()` returns
-`false` unconditionally.
-
-External research (not visible from this codebase) shows Nutanix does have
-a CBT-equivalent primitive: the **v4 Changed Regions Tracking (CRT) API**
-(`dataprotection/v4.1`, `compute-changed-regions` endpoint), which computes
-byte-range deltas between two VM recovery points, or against an empty disk
-for a full-disk baseline. Key facts from Nutanix's own developer
-documentation:
-
-- Two-step call: a discovery call to Prism Central returns the target Prism
-  Element IP and a short-lived (15-minute) JWT authorization token; the
-  actual changed-region computation call goes to Prism Element.
-- Requires **Prism Central pc.2024.3 or later**.
-- Requires VM recovery points (snapshots) to exist first — but these can be
-  created on-demand via the v4 `dataprotection` API's `CreateRecoveryPoint`
-  action, independent of a configured protection policy (Nutanix DR/Leap is
-  not a hard prerequisite for creating the recovery point itself, based on
-  available documentation).
-- Response is paginated (up to 10,000 changed regions per call, with a
-  `nextOffset` cursor) and includes `fileSize` for the source disk.
-- Nutanix's own guidance for this API says *"If you are not a backup
-  vendor, we recommend reaching out to your backup provider"* — this reads
-  as targeting certified backup/DR partner integrations, which is Open
-  Question #1 and needs to be resolved with Nutanix directly before
-  committing engineering effort here.
-
-**Sources consulted:**
-[Nutanix v4 DR API Series Part 2: CBT and CRT](https://www.nutanix.dev/2025/01/15/nutanix-v4-disaster-recovery-api-series-part-2-changed-blocks-tracking-cbt-and-changed-regions-tracking-crt/),
-[Create an On-Demand VM Recovery Point](https://portal.nutanix.com/page/documents/solutions/details?targetId=TN-2047-Data-Protection-for-AHV-Based-VMs:create-an-on-demand-vm-recovery-point.html),
-[Create a Recovery Point for a VM (v4 API)](https://portal.nutanix.com/page/documents/solutions/details?targetId=TN-2209-Nutanix-v4-API-Backup-Solutions:create-a-recovery-point-for-a-vm.html).
-
-If Forklift can obtain the necessary API access, the shape of a Nutanix
-warm-migration precopy loop mirrors vSphere's directly: create an on-demand
-recovery point → resolve changed regions against the previous recovery
-point (or against empty for the first pass) → read only the changed byte
-ranges from the corresponding catalog image/disk export → repeat on an
-interval → on cutover, do a final delta pass, then power off the source and
-finalize.
-
-**Estimated effort:** unknown until Open Question #1 is resolved; treat as
-a research spike deliverable, not an estimated implementation.
-
-### Gap Tier 4: Feature parity
-
-Gaps that are real and scoped, but smaller than Tiers 2–3:
+Gaps that are real and scoped, but smaller than Tiers 4–5:
 
 - **Shared/excluded disk detection.** vSphere's `SharedDisks`/
   `ExcludedDisks` validators inspect real state (`disk.Shared`,
@@ -322,7 +335,106 @@ Gaps that are real and scoped, but smaller than Tiers 2–3:
   host-affinity scheduling for Nutanix would need new design work, not a
   straight port — it's unclear what "host" would even mean as a scheduling
   dimension for AHV clusters in this codebase today. Shared-disk-aware
-  ordering, however, is portable once Tier 4's shared-disk detection lands.
+  ordering, however, is portable once this tier's shared-disk detection
+  lands.
+
+### Gap Tier 3: Guest customization (conversion pod)
+
+vSphere's disk copy for cold migrations can route through a virt-v2v
+conversion pod (`PodEnvironment`, `builder.go:202-312` in the vSphere
+adapter) that performs in-guest customization: virtio driver injection,
+`/etc/fstab`/network config rewriting for static-IP preservation, and
+LUKS/NBDE disk decryption. Nutanix has none of this — `PodEnvironment`
+(`builder.go:822-824`) is a stub returning `nil, nil`, `ConversionPodConfig`
+returns an empty result, and `builder.go:772` carries an explicit TODO:
+*"remove this when Nutanix has a conversion step."*
+
+**Practical consequence:** an AHV guest without virtio drivers pre-installed
+will not boot on KubeVirt after a Forklift migration today. This is the
+single biggest gap standing between "works in a lab with virtio-ready
+images" and general production readiness.
+
+virt-v2v itself is not inherently vSphere-specific — per
+`docs/use-of-virt-v2v-in-forklift.md`, it supports an `-i disk` local-file
+input mode (`virt-v2v -i disk disk.img -o kubevirt [...]`), which is
+architecture-agnostic: it just needs a block device or file, not a vCenter
+connection. Nutanix already produces exactly that shape of artifact — a
+disk image reachable over HTTP via the catalog-image mechanism
+(`elementHTTPSource`/`centralHTTPSource` in `builder.go`). The open question
+(#2 above) is whether that HTTP source can be presented to virt-v2v as a
+block device via nbdkit's `curl` plugin (streaming, no full download) or
+whether it requires downloading the full image into pod-local storage first
+— which works but loses the "single copy" property CDI HTTP import
+currently has, and would need a temp-storage strategy analogous to the
+existing `ConversionTempStorageClass`/`ConversionTempStorageSize` plan
+fields.
+
+**Estimated effort:** large, and effort is not the main uncertainty — the
+open question above is. This should start with a virt-v2v spike (Open
+Question #2), not a full implementation commitment.
+
+### Gap Tier 4: Warm migration / change tracking
+
+vSphere's warm migration is a real precopy/checkpoint loop backed by CBT:
+`GetSnapshotDeltas` calls VMware's `QueryChangedDiskAreas` API to fetch
+changed disk regions between snapshot checkpoints. Nutanix's `client.go`
+already declares the matching interface methods (`CreateSnapshot`,
+`RemoveSnapshot`, `GetSnapshotDeltas`, `SetCheckpoints`,
+`CheckSnapshotReady`, `CheckSnapshotRemove`, `client.go:268-297`), but every
+one is a literal no-op today, and `Validator.WarmMigration()` returns
+`false` unconditionally.
+
+External research shows Nutanix does have a CBT-equivalent primitive: the
+**v4 Changed Regions Tracking (CRT) API** (`dataprotection` namespace,
+`compute-changed-regions` endpoint), which computes byte-range deltas
+between two VM recovery points, or against an empty disk for a full-disk
+baseline. Facts gathered so far, with the caveats in Open Question #4:
+
+- Two-step call: a discovery call to Prism Central returns the target Prism
+  Element IP and a short-lived (15-minute) JWT authorization token; the
+  actual changed-region computation call goes to Prism Element.
+- **Version requirement is not yet pinned down precisely.** Nutanix's
+  January 2025 introductory blog post cites `pc.2024.3+`; the current v4
+  API reference matrix lists the `dataprotection` namespace as reaching GA
+  at PC 7.3 / AOS 7.3; community forum evidence shows the endpoint used
+  against PC 7.5 / AOS 11.0.0.1. These are not necessarily contradictory —
+  the capability may have shipped as EA/RC around PC 2024.3 and reached GA
+  later — but the *specific* `compute-changed-regions` endpoint's GA status
+  independent of the broader namespace has not been independently
+  confirmed here. Nutanix's versioning scheme treats EA/RC as explicitly
+  unsupported for production, so this must be resolved before committing
+  to an implementation, not just before committing to a release date.
+- Requires VM recovery points (snapshots) to exist first — but these can be
+  created on-demand via the v4 `dataprotection` API's `CreateRecoveryPoint`
+  action, independent of a configured protection policy (Nutanix DR/Leap is
+  not a hard prerequisite for creating the recovery point itself, based on
+  available documentation).
+- Response is paginated (up to 10,000 changed regions per call, with a
+  `nextOffset` cursor) and includes `fileSize` for the source disk.
+- Nutanix's own guidance for this API says *"If you are not a backup
+  vendor, we recommend reaching out to your backup provider"* — this reads
+  as targeting certified backup/DR partner integrations, which is Open
+  Question #1 and needs to be resolved with Nutanix directly before
+  committing engineering effort here.
+
+**Sources consulted:**
+[Nutanix v4 DR API Series Part 2: CBT and CRT](https://www.nutanix.dev/2025/01/15/nutanix-v4-disaster-recovery-api-series-part-2-changed-blocks-tracking-cbt-and-changed-regions-tracking-crt/),
+[Create an On-Demand VM Recovery Point](https://portal.nutanix.com/page/documents/solutions/details?targetId=TN-2047-Data-Protection-for-AHV-Based-VMs:create-an-on-demand-vm-recovery-point.html),
+[Create a Recovery Point for a VM (v4 API)](https://portal.nutanix.com/page/documents/solutions/details?targetId=TN-2209-Nutanix-v4-API-Backup-Solutions:create-a-recovery-point-for-a-vm.html),
+[Nutanix v4 API Reference](https://www.nutanix.dev/api-reference-v4/),
+[Nutanix v4 API Versioning Scheme and Types](https://www.nutanix.dev/nutanix-v4-api-versioning-scheme-and-types/),
+[Nutanix Legacy API End-of-Life Announcement Bulletin (PDF)](https://download.nutanix.com/misc/LegacyAPI-EOLNotification.pdf).
+
+If Forklift can obtain the necessary API access, the shape of a Nutanix
+warm-migration precopy loop mirrors vSphere's directly: create an on-demand
+recovery point → resolve changed regions against the previous recovery
+point (or against empty for the first pass) → read only the changed byte
+ranges from the corresponding catalog image/disk export → repeat on an
+interval → on cutover, do a final delta pass, then power off the source and
+finalize.
+
+**Estimated effort:** unknown until Open Questions #1 and #4 are resolved;
+treat as a research spike deliverable, not an estimated implementation.
 
 ### Gap Tier 5: Tooling, CLI, tests, docs
 
@@ -330,7 +442,7 @@ Parity work, not research:
 
 - **Tests.** No `validator_test.go` (vSphere's is 732 lines with real
   cases), no `destinationclient_test.go`, no `scheduler_test.go`, no
-  suite-level harness for Nutanix. Each Tier 1–4 item landing should ship
+  suite-level harness for Nutanix. Each Tier 0–3 item landing should ship
   its own tests rather than deferring this to a cleanup pass.
 - **CLI (`kubectl-mtv`).** vSphere has a dedicated
   `create/provider/vsphere` package with its own interactive flow;
@@ -362,13 +474,13 @@ Parity work, not research:
   container currently reaches `Ready` and only fails during execution,
   potentially after other VMs in the same plan have already started
   migrating. This is a correctness/UX risk, not a security risk, and is the
-  primary justification for prioritizing Tier 1 first.
+  primary justification for prioritizing Tier 1 early.
 - **Guest customization gap has a security dimension.** Without LUKS/NBDE
-  support (Tier 2), encrypted-disk VMs cannot be safely migrated at all
+  support (Tier 3), encrypted-disk VMs cannot be safely migrated at all
   today — the disk would import undecrypted or fail. This should be called
-  out explicitly in user-facing docs as an unsupported case until Tier 2
+  out explicitly in user-facing docs as an unsupported case until Tier 3
   lands, rather than left implicit.
-- **CRT API credentials/token handling.** If Tier 3 proceeds, the
+- **CRT API credentials/token handling.** If Tier 4 proceeds, the
   15-minute JWT tokens returned by the discovery call are short-lived
   bearer credentials scoped to a specific recovery point; they should be
   handled with the same care Forklift already applies to the Prism Central
@@ -377,8 +489,14 @@ Parity work, not research:
   cycle rather than cached long-term.
 - **Partner-program dependency.** If Open Question #1 resolves to "CRT
   requires a Nutanix backup-vendor partnership," that's a business/legal
-  dependency external to engineering effort, and Tier 3 should be
+  dependency external to engineering effort, and Tier 4 should be
   explicitly marked blocked rather than estimated until resolved.
+- **Deferred legacy-API migration risk.** If Tier 0 is deprioritized behind
+  the vSphere-parity tiers, the project risks reaching Nutanix's Q2 CY2027
+  last-GA-release milestone (or the Q4 CY2027 start of phased removal)
+  with core inventory collection still on deprecated APIs. This should be
+  tracked on its own timeline independent of how the rest of the roadmap
+  is prioritized (Open Question #5).
 
 ## Design Details
 
@@ -386,26 +504,31 @@ Parity work, not research:
 
 | Phase | Scope | Depends on | Ships independently? |
 |---|---|---|---|
-| Phase 0 | Resolve Open Questions #1–#4 (Nutanix partner conversation, virt-v2v spike, category-API check, min PC version decision) | — | Yes — pure research |
-| Phase 1 | Tier 1 validator correctness + `validator_test.go` + compatibility-matrix docs update | — | Yes |
-| Phase 2 | Tier 4 items with no external dependency: OS/Preference mapping, shared/excluded-disk model extension + validation | Phase 1 (shares validator test patterns) | Yes |
-| Phase 3 | Tier 2 guest customization (conversion pod) | Phase 0's virt-v2v spike result | No — blocked on Phase 0 |
-| Phase 4 | Tier 3 warm migration | Phase 0's Nutanix partner-access result, and reuses Phase 3's disk-access patterns if any | No — blocked on Phase 0, likely also on Phase 3 |
+| Phase 0 | Resolve Open Questions #1–#5 (Nutanix partner conversation, virt-v2v spike, category-API check, `compute-changed-regions` GA-status confirmation, Tier 0 sequencing decision) | — | Yes — pure research |
+| Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory and Prism Element image/storage-container handling) | — | Yes |
+| Phase 2 | Tier 1 validator correctness + `validator_test.go` + compatibility-matrix docs update | Benefits from Phase 1 landing first (shares the same client code) but not strictly blocked on it | Yes |
+| Phase 3 | Tier 2 items with no external dependency: OS/Preference mapping, shared/excluded-disk model extension + validation | Phase 2 (shares validator test patterns) | Yes |
+| Phase 4 | Tier 3 guest customization (conversion pod) | Phase 0's virt-v2v spike result | No — blocked on Phase 0 |
+| Phase 5 | Tier 4 warm migration | Phase 0's Nutanix partner-access and version-confirmation results, and reuses Phase 4's disk-access patterns if any | No — blocked on Phase 0, likely also on Phase 4 |
 | Ongoing | Tier 5 tooling/CLI/tests/docs | Tracks alongside each phase above | N/A |
 
-Phases 1 and 2 should be scoped as normal `implementable` enhancements once
-this document's tiering is agreed on; Phases 3 and 4 should remain
+Phases 1–3 should be scoped as normal `implementable` enhancements once
+this document's tiering is agreed on; Phases 4 and 5 should remain
 `provisional` until Phase 0 closes their respective open questions.
 
 ### Test Plan
 
-- **Phase 1:** unit tests per validator method against fixture inventory
+- **Phase 1:** unit tests confirming v4 client calls produce equivalent
+  inventory records to the current v3/v2.0 calls (regression-style,
+  fixture-based); no behavioral change is intended, so test coverage
+  should focus on parity, not new validation logic.
+- **Phase 2:** unit tests per validator method against fixture inventory
   data (mirroring vSphere's `validator_test.go` structure — happy path,
   missing-mapping path, boundary sizes for `InvalidDiskSizes`).
-- **Phase 2:** unit tests for OS-ID mapping table coverage; integration
+- **Phase 3:** unit tests for OS-ID mapping table coverage; integration
   test migrating a VM with a shared disk to confirm the validator now
   rejects/flags it rather than silently passing.
-- **Phase 3/4:** to be defined once feasibility is confirmed; expect at
+- **Phase 4/5:** to be defined once feasibility is confirmed; expect at
   minimum an integration test against a real (or Nutanix-provided sandbox)
   Prism Central instance, since neither virt-v2v block-device streaming nor
   the CRT API can be meaningfully unit-tested against mocks alone.
@@ -414,12 +537,14 @@ this document's tiering is agreed on; Phases 3 and 4 should remain
 
 ### Upgrade / Downgrade Strategy
 
-No CRD schema changes are required for Phase 1 or Phase 2 — both are
-adapter-internal logic changes plus (for Phase 2's shared-disk detection) a
+Phase 1 changes the Prism API versions used internally but should be
+behaviorally transparent to users — no CRD or plan-spec changes. No CRD
+schema changes are required for Phase 2 or Phase 3 either — both are
+adapter-internal logic changes plus (for Phase 3's shared-disk detection) a
 non-breaking inventory model field addition, consistent with how vSphere
-and oVirt already model these fields. Phase 3 (conversion pod) may require
+and oVirt already model these fields. Phase 4 (conversion pod) may require
 new `PlanSpec` fields analogous to `ConversionTempStorageClass`/
-`ConversionTempStorageSize`, which are additive and optional. Phase 4 (warm
+`ConversionTempStorageSize`, which are additive and optional. Phase 5 (warm
 migration) would reuse the existing `MigrationWarm` type and `Cutover`/
 `VMCutover` fields already defined in `pkg/apis/forklift/v1beta1/{plan,
 migration}.go` — no new API surface anticipated there either.
@@ -431,58 +556,76 @@ migration}.go` — no new API surface anticipated there either.
 | Nutanix adapter wiring | `pkg/controller/plan/adapter/nutanix/adapter.go` |
 | Nutanix builder (VM spec, DataVolumes) | `pkg/controller/plan/adapter/nutanix/builder.go` |
 | Nutanix validator (target of Tier 1) | `pkg/controller/plan/adapter/nutanix/validator.go` |
-| Nutanix client (snapshot stubs, target of Tier 3) | `pkg/controller/plan/adapter/nutanix/client.go` |
+| Nutanix client (snapshot stubs, target of Tier 4; legacy v3 usage, target of Tier 0) | `pkg/controller/plan/adapter/nutanix/client.go` |
 | Nutanix v4 image/catalog handling | `pkg/controller/plan/adapter/nutanix/image_v4.go` |
+| Nutanix inventory collector (target of Tier 0) | `pkg/controller/provider/container/nutanix/{client,prism,image_api,storage_api}.go` |
 | Nutanix scheduler | `pkg/controller/plan/scheduler/nutanix/scheduler.go` |
 | Nutanix inventory model | `pkg/controller/provider/model/nutanix/model.go` |
-| Nutanix inventory collector | `pkg/controller/provider/container/nutanix/{collector,resource_vm,prism}.go` |
 | vSphere validator (reference) | `pkg/controller/plan/adapter/vsphere/validator.go` |
 | vSphere builder (reference) | `pkg/controller/plan/adapter/vsphere/builder.go` |
 | vSphere scheduler (reference) | `pkg/controller/plan/scheduler/vsphere/scheduler.go` |
 | virt-v2v conversion-pod architecture | `docs/use-of-virt-v2v-in-forklift.md` |
 | Shared `planbase` validation helpers | `pkg/controller/plan/adapter/base/` |
 | Compatibility matrices (docs gap) | `docs/compatibility/*.md` |
+| Nutanix legacy API EOL bulletin | `https://download.nutanix.com/misc/LegacyAPI-EOLNotification.pdf` |
 
 ## Implementation History
 
 - 2026-09-02 — Initial gap analysis and phased roadmap drafted.
+- 2026-09-02 — Added Tier 0 (legacy Prism API deprecation) after
+  discovering Nutanix's dated EOL bulletin for v0.8/v1/v2/v3 APIs, which
+  the current inventory collector and Prism Element disk-transfer path
+  depend on; corrected the warm-migration version-requirement claim
+  (previously stated as a settled `pc.2024.3+` fact) to reflect conflicting
+  evidence across sources, now tracked as Open Question #4.
 
 ## Drawbacks
 
-- This is a large, multi-release effort; splitting it across five tiers
-  and four phases risks the project shipping Phase 1 and then
-  deprioritizing Phases 2–4 indefinitely, leaving Nutanix permanently at
+- This is a large, multi-release effort; splitting it across six tiers
+  and six phases risks the project shipping Phase 1 or 2 and then
+  deprioritizing the rest indefinitely, leaving Nutanix permanently at
   "cold migration, no guest customization" maturity. Phase sequencing
   should be revisited at each phase boundary rather than treated as a
   fire-and-forget backlog.
-- Phases 3 and 4 depend on external factors (Nutanix partner access, an
-  unproven virt-v2v integration path) that engineering cannot unilaterally
-  resolve, which makes them poor candidates for hard release commitments
-  until Phase 0 concludes.
+- Phases 4 and 5 depend on external factors (Nutanix partner access, an
+  unproven virt-v2v integration path, an unconfirmed API GA status) that
+  engineering cannot unilaterally resolve, which makes them poor candidates
+  for hard release commitments until Phase 0 concludes.
+- Tier 0's timeline is set by Nutanix, not this project; if Phase 0's
+  research is wrong about the runway (e.g. if Nutanix accelerates the
+  schedule in a future bulletin revision, as it already revised once
+  between the Dec 2024 and June 2026 versions), Phase 1 may need to be
+  pulled forward on short notice.
 
 ## Alternatives
 
 1. **Skip guest customization; document virtio-driver pre-installation as a
-   hard migration prerequisite.** Lower engineering cost than Phase 3, but
+   hard migration prerequisite.** Lower engineering cost than Phase 4, but
    pushes real operational burden onto users and diverges from vSphere's
    UX, where drivers are injected automatically. Reasonable as an interim
    position while Phase 0's virt-v2v spike is pending, not as a permanent
    substitute.
-2. **Pursue array/CSI-level offload (Tier 4's populator gap) before warm
+2. **Pursue array/CSI-level offload (Tier 2's populator gap) before warm
    migration**, on the theory that large-scale migrations benefit more from
    faster cold-copy than from warm-migration's reduced cutover window. This
-   re-orders Phase 3/4 relative to Tier 4's populator item; worth revisiting
+   re-orders Phase 4/5 relative to Tier 2's populator item; worth revisiting
    once Phase 0 clarifies warm migration's actual feasibility and cost.
 3. **Treat warm migration as permanently out of scope** if Phase 0
    confirms the CRT API is not available to Forklift without a Nutanix
-   partnership Forklift's maintainers are unwilling or unable to pursue. In
-   that case, Phase 4 should be formally marked `rejected` (per this
-   template's status vocabulary) rather than left `provisional`
-   indefinitely.
+   partnership Forklift's maintainers are unwilling or unable to pursue, or
+   that `compute-changed-regions` remains EA/RC indefinitely. In that case,
+   Phase 5 should be formally marked `rejected` (per this template's status
+   vocabulary) rather than left `provisional` indefinitely.
+4. **Defer Tier 0 entirely until closer to Nutanix's Q2 CY2027 milestone.**
+   Cheaper in the short term, but risks a late scramble, and means every
+   other tier's client-layer work done in the interim gets built against
+   APIs slated for removal, likely requiring rework.
 
 ## Infrastructure Needed
 
-- Access to a Nutanix Prism Central environment on `pc.2024.3+` for API
-  research and later integration testing (Phase 0 onward).
+- Access to a Nutanix Prism Central environment on a version enabling GA
+  `dataprotection`/`vmm`/`clustermgmt` v4 APIs (PC 7.3+, per the current API
+  reference matrix, pending Open Question #4's more precise confirmation)
+  for API research and later integration testing (Phase 0 onward).
 - A contact point at Nutanix (partner engineering or API support) to
-  resolve Open Question #1 before Phase 4 can be scoped.
+  resolve Open Questions #1 and #4 before Phase 5 can be scoped.
