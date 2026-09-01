@@ -58,16 +58,42 @@ see-also:
    Tracking cites `pc.2024.3+`; the current (as of this research) v4 API
    reference matrix lists the `dataprotection` namespace as GA starting at
    PC 7.3 / AOS 7.3; and community forum posts show the endpoint in active
-   use against PC 7.5 / AOS 11.0.0.1. Nutanix's v4 versioning scheme
-   explicitly distinguishes EA (`.aN` suffix) and RC (`.bN` suffix) stages
-   from GA, and states *"EA APIs can be dropped or changed at any time
-   without prior notice"* and *"RC ... not recommended for production
-   use."* Namespace-level GA does not by itself prove the specific
+   use against PC 7.5 / AOS 11.0.0.1 (the `11.0.0.1` in that report doesn't
+   match AOS's own 6.x/7.x numbering scheme and could reflect a different
+   component's version string — treat that data point as unverified rather
+   than authoritative). Nutanix's v4 versioning scheme explicitly
+   distinguishes EA (`.aN` suffix) and RC (`.bN` suffix) stages from GA, and
+   states *"EA APIs can be dropped or changed at any time without prior
+   notice"* and *"RC ... not recommended for production use."*
+   Namespace-level GA does not by itself prove the specific
    `compute-changed-regions` endpoint has left EA/RC — this needs to be
    confirmed against Nutanix's dataprotection v4 API changelog/release
    notes (or directly with Nutanix) before gating any implementation on a
    specific version floor, mirroring how oVirt's direct-LUN support is
    gated behind `engine >= 4.5.2.1` (see `ovirt-lun-migration.md`).
+
+   This question also has a practical timing dimension, per Nutanix's
+   published AOS release/support lifecycle (`endoflife.date/nutanix-aos`,
+   itself sourced from Nutanix's own EOL/support-lifecycle pages):
+
+   | AOS release | Released | End of Maintenance | End of Support |
+   |---|---|---|---|
+   | 7.6 (latest as of this writing) | Jul 27, 2026 | Oct 31, 2027 | Jul 31, 2028 |
+   | 7.5 | Dec 8, 2025 | Mar 31, 2027 | Dec 31, 2027 |
+   | 7.3 (cited `dataprotection` GA floor) | Jun 24, 2025 | **Sep 30, 2026** | Jun 30, 2027 |
+   | 7.0 | Dec 4, 2024 | Mar 31, 2026 (already past) | Dec 31, 2026 |
+   | 6.10 (LTS) | Oct 7, 2024 | Jan 31, 2026 (already past) | Oct 31, 2026 |
+
+   AOS 7.3 — the version most often cited as the `dataprotection`/`vmm`/
+   `clustermgmt` v4 GA floor — exits active maintenance essentially
+   immediately (Sep 30, 2026) and moves into troubleshooting-only support.
+   By the time any Nutanix warm-migration implementation could realistically
+   ship, targeting AOS 7.3 as the supported floor would mean targeting a
+   release already past active maintenance. A more realistic floor to
+   design and test against is AOS 7.5 or 7.6, both still in full active
+   maintenance with multi-year runway. This doesn't change the underlying
+   feasibility question, but it does mean Phase 0's version research should
+   explicitly target 7.5/7.6 behavior, not just confirm 7.3 GA status.
 5. **What is Forklift's position on the Nutanix legacy-API deprecation
    timeline** (see [Gap Tier 0](#gap-tier-0-legacy-prism-api-deprecation-time-bound))?
    Specifically: should the v2.0/v3 → v4 migration for existing,
@@ -423,7 +449,8 @@ baseline. Facts gathered so far, with the caveats in Open Question #4:
 [Create a Recovery Point for a VM (v4 API)](https://portal.nutanix.com/page/documents/solutions/details?targetId=TN-2209-Nutanix-v4-API-Backup-Solutions:create-a-recovery-point-for-a-vm.html),
 [Nutanix v4 API Reference](https://www.nutanix.dev/api-reference-v4/),
 [Nutanix v4 API Versioning Scheme and Types](https://www.nutanix.dev/nutanix-v4-api-versioning-scheme-and-types/),
-[Nutanix Legacy API End-of-Life Announcement Bulletin (PDF)](https://download.nutanix.com/misc/LegacyAPI-EOLNotification.pdf).
+[Nutanix Legacy API End-of-Life Announcement Bulletin (PDF)](https://download.nutanix.com/misc/LegacyAPI-EOLNotification.pdf),
+[Nutanix AOS release/support lifecycle](https://endoflife.date/nutanix-aos).
 
 If Forklift can obtain the necessary API access, the shape of a Nutanix
 warm-migration precopy loop mirrors vSphere's directly: create an on-demand
@@ -623,9 +650,12 @@ migration}.go` — no new API surface anticipated there either.
 
 ## Infrastructure Needed
 
-- Access to a Nutanix Prism Central environment on a version enabling GA
-  `dataprotection`/`vmm`/`clustermgmt` v4 APIs (PC 7.3+, per the current API
-  reference matrix, pending Open Question #4's more precise confirmation)
-  for API research and later integration testing (Phase 0 onward).
+- Access to a Nutanix Prism Central environment on **AOS/PC 7.5 or 7.6**
+  for API research and later integration testing (Phase 0 onward). AOS 7.3
+  is the version most often cited as the `dataprotection`/`vmm`/
+  `clustermgmt` v4 GA floor, but it exits active maintenance Sep 30, 2026
+  (essentially immediately relative to this document); 7.5/7.6 have
+  multi-year maintenance runway and are the more realistic target for any
+  implementation that would ship after Phase 0 completes.
 - A contact point at Nutanix (partner engineering or API support) to
   resolve Open Questions #1 and #4 before Phase 5 can be scoped.
