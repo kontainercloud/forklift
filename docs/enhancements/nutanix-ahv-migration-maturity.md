@@ -216,8 +216,10 @@ The vSphere adapter (`pkg/controller/plan/adapter/vsphere`) supports both
 cold and warm migration; routes disk copy either through CDI's VDDK importer
 or through a virt-v2v conversion pod for guest customization
 (`docs/use-of-virt-v2v-in-forklift.md` documents the conversion-pod
-architecture in detail); implements every `Validator` method against real
-inventory state; has a 326-line scheduler with host-capacity awareness and
+architecture in detail); implements most `Validator` methods against real
+inventory state (a handful — `DirectStorage`, `PowerState`,
+`VMMigrationType` — are deliberate no-ops for concepts that don't apply to
+vSphere either, not gaps); has a 326-line scheduler with host-capacity awareness and
 shared-disk creator/consumer ordering; supports volume-populator storage
 offload (XCOPY, CSI-native import); maps VMware `GuestID` and tags to
 KubeVirt OS labels and destination annotations; and has full unit test
@@ -272,13 +274,23 @@ proposed new work. Confirmed via grep of the current tree:
   image-file endpoint (`/api/nutanix/v3/images/%s/file`), and
   `clusterExternalIP` (used to rewrite Prism Central download redirects to
   the cluster VIP) calls `ListV3[Cluster]`.
+- `pkg/controller/plan/adapter/nutanix/client.go:212-252` — VM lifecycle
+  operations during migration are also on `v3`: `getVM` (`GET
+  /api/nutanix/v3/vms/{uuid}`), `setPowerState` (`PUT` of the full VM spec
+  with an updated power-state field — Nutanix's v3 update pattern requires
+  resubmitting the whole spec, not a partial patch), and
+  `transitionPowerState` (`POST .../vms/{uuid}/set_power_state`, used for
+  ACPI shutdown). These are load-bearing for cold migration itself — power
+  state reads and shutdown are legacy-API-dependent alongside inventory
+  collection and disk transfer, not a separate concern.
 
 Only two paths have already been ported to `v4`: Prism Central image
 listing/creation (`vmm v4.0/content/images`, `image_v4.go`) and Prism
 Central storage-container listing (`clustermgmt v4.0/config/
 storage-containers`, `storage_api.go`). Everything else — the entire VM/
-host/cluster/subnet inventory collector, and the whole Prism Element
-disk-transfer path — is on APIs Nutanix has now dated for removal.
+host/cluster/subnet inventory collector, the VM lifecycle calls above, and
+the whole Prism Element disk-transfer path — is on APIs Nutanix has now
+dated for removal.
 
 **Why this matters for sequencing:** unlike Tiers 1–5, this has an external
 deadline that isn't under this project's control, and it touches the same
@@ -310,7 +322,7 @@ that vSphere already uses.
 | `NetworksMapped` / `NICNetworkRefs` | `validator.go:37-40,46-49`, stub | `NIC.SubnetUUID` (used in `builder.go:327`) | iterates `vm.Networks` against `Map.Network.Status.Refs` |
 | `InvalidDiskSizes` | `validator.go:83-86`, stub | `Disk.DiskSizeBytes` (used in `builder.go:749`) | flags disk files with `capacity <= 0` |
 | `MacConflicts` | `validator.go:88-91`, stub | `NIC.MACAddress` (used in `builder.go:342`) + shared `planbase.CheckMacConflicts` helper | checks source MACs against destination inventory |
-| `GuestToolsInstalled` | `validator.go:98-100`, hardcoded `true` | `VM.GuestToolsEnabled/Mounted/Reachable/Version` — collected, currently unused anywhere | checks VMware Tools status when VM is powered on |
+| `GuestToolsInstalled` | `validator.go:98-100`, hardcoded `true` | `VM.GuestToolsEnabled/Mounted/Reachable/Version` — collected and already exposed via the inventory REST API (`web/nutanix/vm.go:250-270`), just not consumed by validation or building logic | checks VMware Tools status when VM is powered on |
 | `PVCNameTemplate` | `validator.go:93-96`, stub | `Disk.UUID` covers the base case; `WinDriveLetter` (`plan.go:609`, vSphere-only today, sourced from VMware Tools guest-info) would need an equivalent Nutanix Guest Tools-derived field — a separate, smaller inventory gap, not part of Tier 3's conversion-pod work | builds `PVCNameTemplateData` per disk, validates via shared `planbase.ValidatePVCNameTemplate` |
 
 `MaintenanceMode` is a partial exception: vSphere checks a real
@@ -392,10 +404,19 @@ LUKS/NBDE disk decryption. Nutanix has none of this — `PodEnvironment`
 returns an empty result, and `builder.go:772` carries an explicit TODO:
 *"remove this when Nutanix has a conversion step."*
 
-**Practical consequence:** an AHV guest without virtio drivers pre-installed
-will not boot on KubeVirt after a Forklift migration today. This is the
-single biggest gap standing between "works in a lab with virtio-ready
-images" and general production readiness.
+**Practical consequence — a risk, not a guaranteed failure.** The builder's
+`diskBus` mapping (`builder.go:256-268`) already preserves AHV's SCSI and
+SATA/IDE adapter types onto their equivalent KubeVirt buses, so a guest
+whose disks were attached via one of those buses in AHV can potentially
+still boot without virtio drivers. Only disks that require virtio
+specifically — including AHV's PCI-attached adapters, which `diskBus`
+defaults to virtio for — are guaranteed to depend on injection that
+doesn't happen today. The actual failure rate in practice depends on which
+adapter types and guest OS/driver combinations Nutanix customers commonly
+use; this is nonetheless the single biggest known risk standing between
+"works in a lab with virtio-ready images" and general production
+readiness, but it should be characterized and sized rather than assumed
+universal.
 
 virt-v2v itself is not inherently vSphere-specific — per
 `docs/use-of-virt-v2v-in-forklift.md`, it supports an `-i disk` local-file
@@ -413,9 +434,11 @@ disk image reachable over HTTP via the catalog-image mechanism
 block device via nbdkit's `curl` plugin (streaming, no full download) or
 whether it requires downloading the full image into pod-local storage first
 — which works but loses the "single copy" property CDI HTTP import
-currently has, and would need a temp-storage strategy analogous to the
-existing `ConversionTempStorageClass`/`ConversionTempStorageSize` plan
-fields.
+currently has. If a temp-storage strategy is needed, the existing
+provider-neutral `PlanSpec.ConversionTempStorageClass`/
+`ConversionTempStorageSize` fields (already consumed generically by
+`pkg/controller/conversion/builder.go`) can be reused directly — no new
+API surface needed here.
 
 **Estimated effort:** large, and effort is not the main uncertainty — the
 open question above is. This should start with a virt-v2v spike (Open
@@ -502,11 +525,18 @@ Parity work, not research:
 - **CLI (`kubectl-mtv`).** vSphere has a dedicated
   `create/provider/vsphere` package with its own interactive flow;
   Nutanix is routed through a generic path (`create/provider/create.go`
-  calls `generic.CreateProvider(...)` after `validateNutanixOptions`). vSphere
-  also has dedicated inventory listers (`get/inventory/datastores.go`,
-  `networks.go`, `folders.go`, `datacenters.go`) with no Nutanix
-  counterparts (some, like folders/datacenters, may be legitimately
-  inapplicable to AHV's flatter topology).
+  calls `generic.CreateProvider(...)` after `validateNutanixOptions`) —
+  this is the one demonstrated CLI parity gap. Inventory listing itself is
+  **not** a gap: the shared `get/inventory/` commands already have
+  explicit Nutanix support — `storage.go` calls
+  `GetResourceCollection(ctx, "storagecontainers", ...)` for
+  `case "nutanix"`, `clusters.go` and `hosts.go` both list `"nutanix"`
+  alongside `"ovirt"`/`"vsphere"`/`"hyperv"`, `vms.go` includes
+  `"nutanix"` in its provider-type switches, and `networks.go`'s default
+  branch (used by every non-OpenShift provider) already covers it.
+  `get/inventory/{folders,datacenters}.go` genuinely have no Nutanix case,
+  but that's architecturally correct — AHV has no vCenter-style
+  folder/datacenter hierarchy to list.
 - **Inventory web layer.** vSphere models folders/datacenters/tree/
   custom-fields as first-class inventory resources
   (`pkg/controller/provider/web/vsphere/{datacenter,datastore,folder,
@@ -529,17 +559,31 @@ Proposed Phasing below).
 
 ### Security, Risks, and Mitigations
 
-- **Silent misconfiguration today.** Because Tier 1 validators
-  unconditionally pass, a plan with an unmapped network or storage
-  container currently reaches `Ready` and only fails during execution,
-  potentially after other VMs in the same plan have already started
-  migrating. This is a correctness/UX risk, not a security risk, and is the
-  primary justification for prioritizing Tier 1 early.
-- **Guest customization gap has a security dimension.** Without LUKS/NBDE
-  support (Tier 3), encrypted-disk VMs cannot be safely migrated at all
-  today — the disk would import undecrypted or fail. This should be called
-  out explicitly in user-facing docs as an unsupported case until Tier 3
-  lands, rather than left implicit.
+- **Silent misconfiguration today, with two different failure shapes.**
+  Because Tier 1 validators unconditionally pass, a plan with an unmapped
+  storage container currently reaches `Ready` and fails during execution
+  (`DataVolumes` returns an error when it can't find a storage mapping for
+  a disk). An unmapped **network** fails differently and more subtly:
+  `mapNetworks` (`builder.go:331-333`) silently `continue`s past any NIC
+  with no allocated mapping — the migration doesn't fail at all, it
+  completes with that NIC simply absent from the resulting VM spec. This
+  is arguably a worse operational outcome than an execution failure, since
+  a plan can appear to succeed while the migrated VM is missing expected
+  connectivity. This is a correctness/UX risk, not a security risk, and is
+  the primary justification for prioritizing Tier 1 early.
+- **Guest customization gap and encrypted disks — the risk is remediation,
+  not decryption.** CDI's HTTP importer is an opaque byte copier: it
+  doesn't need to decrypt a LUKS volume, and doesn't corrupt one either —
+  the encrypted bytes transfer unchanged, and a guest with its own
+  passphrase prompt or a reachable NBDE/Tang server could still unlock at
+  boot without any Forklift involvement. What Tier 3 actually provides
+  (mirroring vSphere's `LUKS`/`NbdeClevis` plan fields) is *automated*
+  remediation: passphrase injection, or NBDE network reconfiguration when
+  the migrated VM's new network topology can't reach the original Tang
+  server. Without Tier 3, encrypted-disk VMs migrate as opaque data and
+  depend entirely on the guest's own unlock path continuing to work
+  post-migration — a real limitation, but "cannot be migrated at all" is
+  overstated and should not be repeated in user-facing docs.
 - **CRT API credentials/token handling.** If Tier 4 proceeds, the
   15-minute JWT tokens returned by the discovery call are short-lived
   bearer credentials scoped to a specific recovery point; they should be
@@ -564,8 +608,8 @@ Proposed Phasing below).
 
 | Phase | Scope | Depends on | Ships independently? |
 |---|---|---|---|
-| Phase 0 | Resolve Open Questions #1–#5 (Nutanix partner conversation, virt-v2v spike, category-API check, `compute-changed-regions` GA-status confirmation, Tier 0 sequencing decision) | — | Yes — pure research |
-| Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory and Prism Element image/storage-container handling) | — | Yes |
+| Phase 0 | Resolve the remaining open questions — #1 (Nutanix partner conversation), #2 (virt-v2v spike), #4 (`compute-changed-regions` GA-status confirmation), #5 (Tier 0 sequencing decision). Open Question #3 (categories) is already resolved, not part of this phase's scope. | — | Yes — pure research |
+| Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory, Prism Element image/storage-container handling, and the v3-based VM lifecycle calls in `client.go` — `getVM`, `setPowerState`, `transitionPowerState`) | — | Yes |
 | Phase 2 | Tier 1 validator correctness + `validator_test.go` + compatibility-matrix docs update | Benefits from Phase 1 landing first (shares the same client code) but not strictly blocked on it | Yes |
 | Phase 3 | Tier 2 items with no external dependency: OS/Preference mapping, shared/excluded-disk model extension + validation, category→label mapping | Not strictly blocked on Phase 2, but the shared/excluded-disk validator work benefits from landing after it (same test-fixture patterns) | Yes |
 | Phase 4 | Tier 3 guest customization (conversion pod) | Phase 0's virt-v2v spike result | No — blocked on Phase 0 |
@@ -602,12 +646,15 @@ behaviorally transparent to users — no CRD or plan-spec changes. No CRD
 schema changes are required for Phase 2 or Phase 3 either — both are
 adapter-internal logic changes plus (for Phase 3's shared-disk detection) a
 non-breaking inventory model field addition, consistent with how vSphere
-and oVirt already model these fields. Phase 4 (conversion pod) may require
-new `PlanSpec` fields analogous to `ConversionTempStorageClass`/
-`ConversionTempStorageSize`, which are additive and optional. Phase 5 (warm
-migration) would reuse the existing `MigrationWarm` type and `Cutover`/
-`VMCutover` fields already defined in `pkg/apis/forklift/v1beta1/{plan,
-migration}.go` — no new API surface anticipated there either.
+and oVirt already model these fields. Phase 4 (conversion pod) needs no new
+`PlanSpec` fields at all — the existing provider-neutral
+`ConversionTempStorageClass`/`ConversionTempStorageSize` fields already
+configure scratch storage generically via
+`pkg/controller/conversion/builder.go` and can be reused as-is if Nutanix's
+conversion pod needs temp storage. Phase 5 (warm migration) would reuse the
+existing `MigrationWarm` type and `Cutover`/`VMCutover` fields already
+defined in `pkg/apis/forklift/v1beta1/{plan,migration}.go` — no new API
+surface anticipated there either.
 
 ### Key Code Locations
 
