@@ -564,22 +564,37 @@ scoped narrowly and deliberately: it's a small, self-contained action
 surface (no body, just an extId) with low mapping risk, unlike the
 inventory-collector listing endpoints below.
 
-**Still open: the inventory collector port** (`listClusters`/`listHosts`/
-`listVMs`/`listSubnets` in `pkg/controller/provider/container/nutanix/
-client.go`) remains unported. Despite the corrected GA-status finding
-above, this is a substantially larger and riskier undertaking than the VM
-lifecycle actions: each v4 model (`Vm`, `Host`, `Cluster`, `Subnet`) is a
-large, deeply-nested, auto-generated struct with field names and shapes
-materially different from their v3 counterparts (e.g. the v4 `Vm` struct
-alone runs to dozens of fields covering disks, NICs, GPUs, boot config,
-guest tools, etc.), and a field-by-field reshape into this codebase's
-existing `model.VM`/`model.Host`/etc. done without a live v4-capable
-server to validate the actual wire responses against risks silently
-wrong inventory data for every Prism Central user — a worse outcome than
-leaving it on v3 a while longer. This should be done next once a
-v4-capable Prism Central environment is available to develop and test
-against directly, using the same official-SDK-as-schema-source approach
-that worked well here.
+**Status: cluster and subnet listing implemented, 2026-09-10.**
+`listClusters`/`listSubnets` in `pkg/controller/provider/container/nutanix/
+client.go` are now dual-path too, following the same evidence-sourced
+approach as VM lifecycle: v4 wire schemas taken directly from Nutanix's
+own official Go client (`clustermgmt-go-client`, `networking-go-client`),
+with fixture-based tests (including one confirming the Prism Central
+pseudo-cluster exclusion still works against v4's differently-shaped
+`clusterFunction` field). Two smaller, well-understood entities — the
+initial concern about "large, deeply-nested, auto-generated structs" held
+for these too, but proved tractable once actually attempted: Subnet and
+Cluster's v4 shapes are moderately nested (a few levels for IP config;
+`Config`/`Network`/`Nodes` sub-objects for cluster) but not qualitatively
+different in kind from what `listAllV4`/`toEntity` already handles for
+images and storage containers. One accepted, documented gap: Cluster's v4
+entity carries no storage-capacity fields at the list level (that data is
+behind a separate `/stats/clusters/{extId}` call this collector doesn't
+make, to avoid an N+1 call per cluster) — `TotalCapacity`/`UsedCapacity`
+are left at zero for Prism Central-sourced clusters.
+
+**Still open: VM and Host listing.** These remain on v3 for both Prism
+modes. Unlike Cluster/Subnet, the v4 `Vm` model is substantially larger
+(dozens of fields spanning disks, NICs, GPUs, boot config, guest tools) and
+a mapping error there is more consequential (VM is the actual migration
+subject — wrong disk/NIC data could silently misconfigure a migrated VM,
+not just misreport a dashboard stat the way a wrong cluster capacity
+number would). Host wasn't reattempted this pass either, simply for time —
+its v4 shape wasn't re-researched after finding the global (not
+per-cluster-only) `config/hosts` endpoint earlier. Both should follow the
+same official-SDK-as-schema-source approach that worked for
+Cluster/Subnet, ideally validated against a live v4-capable Prism Central
+once one is available, with VM taking priority as the higher-value target.
 
 ### Gap Tier 1: Validator correctness
 
@@ -1051,7 +1066,7 @@ Proposed Phasing below).
 | Phase | Scope | Depends on | Ships independently? |
 |---|---|---|---|
 | Phase 0 | Resolve the remaining open questions — #1 (Nutanix partner conversation), ~~#2 (virt-v2v spike)~~ **done 2026-09-10**, #4 (`compute-changed-regions` GA-status confirmation, now broadened to Tier 0's endpoints too), #5 (Tier 0 sequencing decision). Open Question #3 (categories) was already resolved. | — | Yes — pure research |
-| Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory, Prism Element image/storage-container handling, and the v3-based VM lifecycle calls in `client.go` — `getVM`, `setPowerState`, `transitionPowerState`) — **VM lifecycle done 2026-09-10**; inventory-collector listing (cluster/host/VM/subnet) still open, now GA-confirmed but not yet ported | — | Yes |
+| Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory, Prism Element image/storage-container handling, and the v3-based VM lifecycle calls in `client.go` — `getVM`, `setPowerState`, `transitionPowerState`) — **VM lifecycle, cluster listing, and subnet listing done 2026-09-10**; host and VM listing still open (VM is the higher-value remaining target) | — | Yes |
 | Phase 2 | Tier 1 validator correctness + `validator_test.go` + compatibility-matrix docs update — **done 2026-09-10** | Benefits from Phase 1 landing first (shares the same client code) but not strictly blocked on it | Yes |
 | Phase 3 | Tier 2 items with no external dependency: OS/Preference mapping, shared/excluded-disk model extension + validation, category→label mapping — **done 2026-09-10** | Not strictly blocked on Phase 2, but the shared/excluded-disk validator work benefits from landing after it (same test-fixture patterns) | Yes |
 | Phase 4 | Tier 3 guest customization (conversion pod) | Open Question #2 is resolved (see Tier 3): the mechanism works, but Nutanix's real image endpoint doesn't support the Range requests it needs, so a full-download fallback is required instead of true streaming. Credential passing through libvirt XML `<auth>` is still untested (sandbox-blocked, not design-blocked) | Unblocked enough to scope a first version around the download-fallback path; still needs a credential-passing decision and the guest-customization logic itself |
@@ -1321,6 +1336,18 @@ surface anticipated there either.
   destabilizing other providers' already-working conversion pods, with no
   way in this sandbox to deploy and validate an actual pod. See the
   updated Tier 3 section.
+- 2026-09-10 — **Reconsidered and closed part of the inventory-collector
+  gap.** The earlier "large and risky, needs a live server" framing for
+  the full collector port conflated two different risk profiles: wrong
+  VM/disk data (consequential — could silently misconfigure a migrated
+  VM) versus wrong cluster/subnet metadata (low-consequence — a
+  misreported dashboard stat, not something that affects migration
+  correctness). Ported `listClusters`/`listSubnets` to v4 for Prism
+  Central on that reconsideration, using the same official-SDK-as-schema
+  approach as the VM lifecycle port, with fixture-based tests. `listVMs`/
+  `listHosts` remain on v3 — VM's v4 model is both larger and
+  higher-consequence to get wrong, and Host wasn't reattempted this pass.
+  See the updated Tier 0 section.
 
 ## Drawbacks
 
