@@ -308,6 +308,26 @@ design. The runway (last-GA release ~Q2 CY2027, phased removal starting
 is real but not immediate, so this should be scheduled deliberately rather
 than treated as a fire drill — see Open Question #5.
 
+**Lab-confirmed, 2026-09-10:** a local Nutanix CE cluster (AOS 6.8.1,
+Prism Element only, not registered to any Prism Central) exposes **zero**
+v4 endpoints — `GET`/direct probes against
+`/api/clustermgmt/v4.0/config/storage-containers`,
+`/api/vmm/v4.0/content/images`, `/api/vmm/v4.0/ahv/config/vms`, and
+`/api/clustermgmt/v4.0/config/clusters` all return `404`, while the
+existing `v3`/`v2.0` calls this adapter already makes return `200`. AOS
+6.8.1 is below every GA floor collected in Open Question #4 (earliest
+cited: `pc.2024.3+`/AOS 7.3), so this doesn't resolve that question, but
+it is a concrete, directly-observed data point that a bare Prism-Element
+deployment on pre-7.x AOS has no v4 gateway at all — consistent with v4
+being a Prism Central-fronted API surface rather than something Prism
+Element serves standalone. **Practical consequence:** Phase 1 cannot be
+implemented-and-verified end-to-end against this lab as configured; doing
+so needs Prism Central added to the lab and/or an AOS upgrade toward
+7.x. Phase 2 (Tier 1) has no such dependency — it is pure logic over
+already-collected `v3` inventory data — so implementation is starting
+there first, with Phase 1 to follow once a v4-capable environment is
+available. See Implementation History.
+
 ### Gap Tier 1: Validator correctness
 
 These `Validator` methods return a hardcoded pass today even though the
@@ -710,6 +730,13 @@ surface anticipated there either.
   0's bullet list). Beginning Phase 1 (Tier 0 legacy API migration)
   implementation next, validated against a local Nutanix CE lab (Prism
   Element, cold migration).
+- 2026-09-10 — Probed the lab (AOS 6.8.1, Prism Element only) directly:
+  confirmed it has no v4 API surface at all (all v4 endpoint probes
+  404; see the new note under Gap Tier 0). This makes Phase 1
+  unverifiable against the lab as currently configured, so implementation
+  is starting with Phase 2 (Tier 1 validator correctness) instead, which
+  needs no new API access. Phase 1 will follow once Prism Central and/or
+  a newer AOS build is available.
 
 ## Drawbacks
 
