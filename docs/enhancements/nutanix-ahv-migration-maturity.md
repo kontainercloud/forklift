@@ -382,19 +382,18 @@ client/collector code that several later tiers (Tier 1's `StorageMapped`/
 need to modify. Doing the legacy-API migration first avoids
 rebasing that other work on soon-to-be-replaced client code.
 
-**Estimated effort:** medium *if* the target v4 endpoints are confirmed GA
-and stable — this is meant to be a systematic client-layer port (v3 → v4
-for cluster/host/VM/subnet listing and Prism Element image handling; v2.0
-→ v4 for Prism Element storage containers), not new feature design. But
-per the "Further research" note above, that precondition doesn't hold yet
-for at least host listing (confirmed RC) and is unconfirmed either way for
-cluster listing, VM lifecycle actions, and subnet listing — so treat this
-estimate as contingent on Open Question #4's now-broadened scope, not as a
-number to schedule against yet. The runway (last-GA release ~Q2 CY2027,
-phased removal starting ~Q4 CY2027, both roughly a year or more out from
-this document's writing) is real but not immediate, so this should be
-scheduled deliberately rather than treated as a fire drill — see Open
-Question #5.
+**Estimated effort (updated 2026-09-10):** VM lifecycle actions are done
+(small, low-risk — see below). The remaining inventory-collector port
+(cluster/host/VM/subnet listing) is medium-to-large: the "GA or not"
+precondition that gated this estimate is now settled (all four listing
+endpoints confirmed GA per Nutanix's own current SDK — see the "Major
+correction" note below), but the actual field-by-field reshape work for
+four large, deeply-nested v4 models remains, and should be done against a
+live v4-capable Prism Central rather than blind. The runway (last-GA
+release ~Q2 CY2027, phased removal starting ~Q4 CY2027, both roughly a
+year or more out from this document's writing) is real but not immediate,
+so this should be scheduled deliberately rather than treated as a fire
+drill — see Open Question #5.
 
 **Lab-confirmed, 2026-09-10:** a local Nutanix CE cluster (AOS 6.8.1,
 Prism Element only, not registered to any Prism Central) exposes **zero**
@@ -477,16 +476,78 @@ PC-having lab to verify":
   scheme — treated as a fetch-summarizer artifact and discarded, not cited
   as evidence anywhere in this document.
 
-**Practical consequence:** this tier's client-layer port should not be
-implemented speculatively against unverified/RC endpoint paths and an
-untested OData filter redesign. The path to `implementable` status runs
-through either (a) a v4-capable Prism Central environment to test against
-directly (only that can settle the real current path/GA-status per
-endpoint, which fluctuates release-to-release per the evidence above), or
-(b) a direct Nutanix engineering contact who can confirm the current GA
-matrix authoritatively — folding into Open Question #4's existing "confirm
-with Nutanix directly" recommendation, now extended from just the CRT API
-to this tier's four list endpoints and three lifecycle actions as well.
+**Practical consequence (as of the above):** this tier's client-layer port
+should not be implemented speculatively against unverified/RC endpoint
+paths and an untested OData filter redesign. The path to `implementable`
+status runs through either (a) a v4-capable Prism Central environment to
+test against directly, or (b) a direct Nutanix engineering contact who can
+confirm the current GA matrix authoritatively.
+
+**Major correction, 2026-09-10 — the above was based on stale/secondary
+sources; Nutanix's own current official SDK settles most of it.** The
+scattered blog/community citations above (`.b1`/`.b2`-suffixed paths,
+"unconfirmed" GA status) turned out to describe an *older* stage of these
+APIs. Checking Nutanix's own actively-maintained Go client repository
+(`github.com/nutanix/ntnx-api-golang-clients`, fetched directly via `gh
+api`/raw.githubusercontent.com — the same technique that correctly sourced
+the Volume Group schema in Tier 2, not a web search) shows all of the
+following at **`v4.3`/`v4.4`, with no `.aN`/`.bN` EA/RC suffix** in the
+currently-published client:
+
+- Cluster listing: `GET /api/clustermgmt/v4.3/config/clusters`
+- Host listing: **`GET /api/clustermgmt/v4.3/config/hosts`** — a global
+  listing, not the per-cluster-nested-only endpoint the earlier
+  `.b1`-suffixed blog snippet described. (A per-cluster variant,
+  `.../clusters/{clusterExtId}/hosts`, also exists alongside it.) Host
+  maintenance mode is also a real, addressable v4 concept here:
+  `.../hosts/{extId}/$actions/enter-host-maintenance` and
+  `exit-host-maintenance` — directly relevant to closing this document's
+  `MaintenanceMode` gap (see Tier 1) once a way to read current
+  maintenance status (not just toggle it) is confirmed.
+- VM listing: `GET /api/vmm/v4.3/ahv/config/vms`, `GET
+  /api/vmm/v4.3/ahv/config/vms/{extId}`.
+- VM lifecycle: `POST .../vms/{extId}/$actions/power-on`, `power-off`
+  ("Forceably shuts down a virtual machine which is equivalent to removing
+  the power cable"), and `shutdown` ("Collaborative shutdown of a Virtual
+  Machine through the ACPI support in the operating system" — the direct
+  v4 equivalent of v3's `ACPI_SHUTDOWN` transition).
+- Subnet listing: `GET /api/networking/v4.4/config/subnets`.
+
+**This doesn't resolve everything** — it settles "is this endpoint
+fundamentally GA in Nutanix's current API surface" (yes, for all of the
+above), but not "what AOS/PC version floor does a given customer cluster
+need to actually have it" (still Open Question #4's territory: SDK-level
+GA and a specific deployed cluster's available API surface are different
+questions), and it doesn't validate the exact JSON response field layout
+end-to-end against a live server (the model structs are large,
+auto-generated, and were read from source, not exercised).
+
+**Status: VM lifecycle implemented, 2026-09-10.** On the strength of this
+evidence, `getVM`/`setPowerState`/`transitionPowerState` in
+`pkg/controller/plan/adapter/nutanix/client.go` are now dual-path: v3
+against Prism Element (unchanged, since Element has no v4 surface at all
+— see the lab-probe note above), v4 (`vmV4Path` +
+`power-on`/`power-off`/`shutdown` actions) against Prism Central. This was
+scoped narrowly and deliberately: it's a small, self-contained action
+surface (no body, just an extId) with low mapping risk, unlike the
+inventory-collector listing endpoints below.
+
+**Still open: the inventory collector port** (`listClusters`/`listHosts`/
+`listVMs`/`listSubnets` in `pkg/controller/provider/container/nutanix/
+client.go`) remains unported. Despite the corrected GA-status finding
+above, this is a substantially larger and riskier undertaking than the VM
+lifecycle actions: each v4 model (`Vm`, `Host`, `Cluster`, `Subnet`) is a
+large, deeply-nested, auto-generated struct with field names and shapes
+materially different from their v3 counterparts (e.g. the v4 `Vm` struct
+alone runs to dozens of fields covering disks, NICs, GPUs, boot config,
+guest tools, etc.), and a field-by-field reshape into this codebase's
+existing `model.VM`/`model.Host`/etc. done without a live v4-capable
+server to validate the actual wire responses against risks silently
+wrong inventory data for every Prism Central user — a worse outcome than
+leaving it on v3 a while longer. This should be done next once a
+v4-capable Prism Central environment is available to develop and test
+against directly, using the same official-SDK-as-schema-source approach
+that worked well here.
 
 ### Gap Tier 1: Validator correctness
 
@@ -915,7 +976,7 @@ Proposed Phasing below).
 | Phase | Scope | Depends on | Ships independently? |
 |---|---|---|---|
 | Phase 0 | Resolve the remaining open questions — #1 (Nutanix partner conversation), ~~#2 (virt-v2v spike)~~ **done 2026-09-10**, #4 (`compute-changed-regions` GA-status confirmation, now broadened to Tier 0's endpoints too), #5 (Tier 0 sequencing decision). Open Question #3 (categories) was already resolved. | — | Yes — pure research |
-| Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory, Prism Element image/storage-container handling, and the v3-based VM lifecycle calls in `client.go` — `getVM`, `setPowerState`, `transitionPowerState`) | — | Yes |
+| Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory, Prism Element image/storage-container handling, and the v3-based VM lifecycle calls in `client.go` — `getVM`, `setPowerState`, `transitionPowerState`) — **VM lifecycle done 2026-09-10**; inventory-collector listing (cluster/host/VM/subnet) still open, now GA-confirmed but not yet ported | — | Yes |
 | Phase 2 | Tier 1 validator correctness + `validator_test.go` + compatibility-matrix docs update — **done 2026-09-10** | Benefits from Phase 1 landing first (shares the same client code) but not strictly blocked on it | Yes |
 | Phase 3 | Tier 2 items with no external dependency: OS/Preference mapping, shared/excluded-disk model extension + validation, category→label mapping — **done 2026-09-10** | Not strictly blocked on Phase 2, but the shared/excluded-disk validator work benefits from landing after it (same test-fixture patterns) | Yes |
 | Phase 4 | Tier 3 guest customization (conversion pod) | Open Question #2 is now resolved (see Tier 3), narrowing what's left to: confirming Range-request support on Nutanix's real image-download endpoints, and working out Basic Auth/cookie credential passing through the libvirt XML `<source>`/`<auth>` mechanism | Partially unblocked — the core feasibility question is answered; two narrower items remain before implementation can start |
@@ -1136,6 +1197,23 @@ surface anticipated there either.
   independent per-VM copies today — the warning surfaces that rather than
   leaving it a silent surprise). See the updated Tier 2 entry. This
   closes out Phase 3 (Tier 2) completely.
+- 2026-09-10 — **Corrected Tier 0's GA-status findings and ported VM
+  lifecycle to v4.** The earlier "hosts confirmed RC, others unsettled"
+  research (same day, above) turned out to be based on stale
+  blog/community snippets describing an older API stage. Checking
+  Nutanix's own currently-maintained official Go client
+  (`github.com/nutanix/ntnx-api-golang-clients`, fetched directly via `gh
+  api`, the same technique that correctly sourced Tier 2's Volume Group
+  schema) shows cluster/host/VM/subnet listing all GA at `v4.3`/`v4.4`
+  with no EA/RC suffix, including a global (not per-cluster-only) host
+  listing endpoint and host-maintenance-mode enter/exit actions. Ported
+  `getVM`/`setPowerState`/`transitionPowerState` in
+  `pkg/controller/plan/adapter/nutanix/client.go` to dual-path v3/v4 on
+  the strength of this evidence, with unit tests against a mock Prism
+  Central server. Left the larger inventory-collector listing port
+  (cluster/host/VM/subnet) for a live v4-capable environment, given the
+  size and mapping risk of reshaping four large auto-generated v4 models
+  blind. See the updated Tier 0 section.
 
 ## Drawbacks
 
