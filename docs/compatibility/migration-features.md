@@ -21,12 +21,12 @@ Forklift supports four migration types, specified via `spec.type` in the Plan CR
 
 ### Support Matrix
 
-| Migration Type | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|----------------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `cold` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `warm` | Yes | Yes* | No | No | No | No | No |
-| `live` | No | No | No | Yes** | No | No | No |
-| `conversion` | Yes | No | No | No | No | No | No |
+| Migration Type | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|----------------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `cold` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `warm` | Yes | Yes* | No | No | No | No | No | No |
+| `live` | No | No | No | Yes** | No | No | No | No |
+| `conversion` | Yes | No | No | No | No | No | No | No |
 
 *oVirt warm migration requires feature gate `FEATURE_OVIRT_WARM_MIGRATION`
 **OpenShift live migration requires feature gate `FEATURE_OCP_LIVE_MIGRATION`
@@ -82,6 +82,7 @@ Guest conversion (virt-v2v) prepares VMs for KubeVirt by:
 | OVA | Yes | VMware OVF format, needs driver injection |
 | EC2 | Yes | AWS-specific drivers, needs VirtIO |
 | HyperV | Yes | Hyper-V tools removal, VirtIO injection |
+| Nutanix | No | AHV already uses VirtIO drivers; no conversion pod is created (`Provider.RequiresConversion()`, `pkg/apis/forklift/v1beta1/provider.go:213-215`) |
 
 ### Conversion Options
 
@@ -149,13 +150,13 @@ spec:
 
 ### Storage Feature Matrix
 
-| Feature | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|---------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| Volume mode selection | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Access mode selection | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Shared disk migration | Yes | Yes | No | No | No | No | No |
-| LUKS decryption | Yes | Yes | No | No | No | No | No |
-| Storage offload (XCOPY) | Yes | No | No | No | No | No | No |
+| Feature | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|---------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| Volume mode selection | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Access mode selection | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Shared disk migration | Yes | Yes | No | No | No | No | No | No |
+| LUKS decryption | Yes | Yes | No | No | No | No | No | No |
+| Storage offload (XCOPY) | Yes | No | No | No | No | No | No | No |
 
 ### Shared Disks
 
@@ -264,11 +265,11 @@ spec:
 
 ### Network Feature Matrix
 
-| Feature | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|---------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| Static IP preservation | Yes | No | No | No | No | No | No |
-| MAC address preservation | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Multiple NICs | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Feature | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|---------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| Static IP preservation | Yes | No | No | No | No | No | No | No |
+| MAC address preservation | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Multiple NICs | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 
 ### Static IP Preservation
 

@@ -129,11 +129,11 @@ Override plan-level templates for specific VMs. See [Template Support Matrix](..
 
 ### Support Matrix
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `pvcNameTemplate` | Yes | No | No | Yes | No | No | No |
-| `volumeNameTemplate` | Yes | No | No | No | No | No | No |
-| `networkNameTemplate` | Yes | No | No | No | No | No | No |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `pvcNameTemplate` | Yes | No | No | Yes | No | No | No | Yes |
+| `volumeNameTemplate` | Yes | No | No | No | No | No | No | No |
+| `networkNameTemplate` | Yes | No | No | No | No | No | No | No |
 
 ### Example
 
@@ -200,9 +200,9 @@ For VMs with LUKS-encrypted disks, provide a secret containing decryption keys.
 
 ### Support Matrix
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `luks` | Yes | Yes | No | No | No | No | No |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `luks` | Yes | Yes | No | No | No | No | No | No |
 
 ### LUKS Secret Format
 
@@ -282,9 +282,9 @@ When set, this overrides the plan-level `migrateSharedDisks` setting for this sp
 
 ### Support Matrix
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `migrateSharedDisks` | Yes | No | No | No | No | No | No |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `migrateSharedDisks` | Yes | No | No | No | No | No | No | No |
 
 ### Example
 
@@ -302,56 +302,63 @@ vms:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `excludeDisks` | []string | omitted | vSphere bus addresses to skip (e.g. `scsi0:1`) |
+| `excludeDisks` | []string | omitted | Provider-specific disk identifiers to skip -- vSphere: bus address (e.g. `scsi0:1`); Nutanix: disk UUID |
 
-When omitted or empty, all disks are migrated (subject to `migrateSharedDisks`). When set, disks whose inventory `busAddress` matches an entry are not imported and are not attached to the target VM. Each entry must match a disk `busAddress` on the source VM.
+When omitted or empty, all disks are migrated (subject to `migrateSharedDisks`). Each entry must match a disk identifier on the source VM (vSphere: `busAddress`; Nutanix: disk `uuid`), or validation fails with a Critical concern. Excluding every disk, or the root/boot disk, is also flagged (Critical and Warning respectively).
 
-vSphere only. A non-empty list forces the CDI transfer path (virt-v2v copies every attached disk).
+vSphere: a non-empty list forces the CDI transfer path (virt-v2v copies every attached disk, so exclusion has to happen via CDI instead). Nutanix has no virt-v2v/conversion-pod path to route around -- each disk already transfers independently -- so excluding a disk there simply skips its DataVolume/PVC.
 
 ### Support Matrix
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `excludeDisks` | Yes | No | No | No | No | No | No |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `excludeDisks` | Yes | No | No | No | No | No | No | Yes |
 
 ### Example
 
 ```yaml
+# vSphere
 vms:
   - id: vm-123
     excludeDisks:
       - scsi0:1
       - scsi0:2
+
+# Nutanix
+vms:
+  - id: vm-456
+    excludeDisks:
+      - 4d5e6f7a-1234-5678-9abc-def012345678
 ```
 
 ---
 
 ## Complete Field Reference
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| **Identity** | | | | | | | |
-| `id` | Req | Req | Req | Req | Req | Req | Req |
-| `name` | Opt | Opt | Opt | Opt | Opt | Opt | Opt |
-| **Target** | | | | | | | |
-| `targetName` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `targetPowerState` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `rootDisk` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `instanceType` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| **Templates** | | | | | | | |
-| `pvcNameTemplate` | Yes | - | - | Yes | - | - | - |
-| `volumeNameTemplate` | Yes | - | - | - | - | - | - |
-| `networkNameTemplate` | Yes | - | - | - | - | - | - |
-| **Hooks** | | | | | | | |
-| `hooks` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| **Encryption** | | | | | | | |
-| `luks` | Yes | Yes | - | - | - | - | - |
-| `nbdeClevis` | Yes | Yes | - | - | - | - | - |
-| **Cleanup** | | | | | | | |
-| `deleteVmOnFailMigration` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| **Shared Disks** | | | | | | | |
-| `migrateSharedDisks` | Yes | - | - | - | - | - | - |
-| **Exclude Disks** | | | | | | | |
-| `excludeDisks` | Yes | - | - | - | - | - | - |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| **Identity** | | | | | | | | |
+| `id` | Req | Req | Req | Req | Req | Req | Req | Req |
+| `name` | Opt | Opt | Opt | Opt | Opt | Opt | Opt | Opt |
+| **Target** | | | | | | | | |
+| `targetName` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `targetPowerState` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `rootDisk` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | - |
+| `instanceType` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| **Templates** | | | | | | | | |
+| `pvcNameTemplate` | Yes | - | - | Yes | - | - | - | Yes |
+| `volumeNameTemplate` | Yes | - | - | - | - | - | - | - |
+| `networkNameTemplate` | Yes | - | - | - | - | - | - | - |
+| **Hooks** | | | | | | | | |
+| `hooks` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| **Encryption** | | | | | | | | |
+| `luks` | Yes | Yes | - | - | - | - | - | - |
+| `nbdeClevis` | Yes | Yes | - | - | - | - | - | - |
+| **Cleanup** | | | | | | | | |
+| `deleteVmOnFailMigration` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| **Shared Disks** | | | | | | | | |
+| `migrateSharedDisks` | Yes | - | - | - | - | - | - | - |
+| **Exclude Disks** | | | | | | | | |
+| `excludeDisks` | Yes | - | - | - | - | - | - | Yes |
 
 **Legend:** Req = Required, Yes = Supported, Opt = Optional, - = Not supported
