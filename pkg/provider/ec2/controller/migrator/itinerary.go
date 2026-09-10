@@ -80,7 +80,7 @@ func (p *EC2Predicate) Evaluate(flag libitr.Flag) (bool, error) {
 
 	// Guest conversion phases: include if provider requires conversion and not skipped
 	if flag&ConversionFlag != 0 {
-		return p.context.Source.Provider.RequiresConversion() && !p.context.Plan.Spec.SkipGuestConversion, nil
+		return p.context.Plan.RequiresGuestConversion() && !p.context.Plan.Spec.SkipGuestConversion, nil
 	}
 
 	// Cross-account snapshot sharing: include if cross-account mode is enabled

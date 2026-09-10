@@ -3130,7 +3130,7 @@ func (r *KubeVirt) setVmLabels(object *cnv.VirtualMachine) (err error) {
 	if object.Labels == nil {
 		object.Labels = make(map[string]string)
 	}
-	if r.Plan.Provider.Source.RequiresConversion() {
+	if r.Plan.RequiresGuestConversion() {
 		object.Labels["guestConverted"] = strconv.FormatBool(!r.Plan.Spec.SkipGuestConversion)
 	}
 	return
@@ -3195,6 +3195,13 @@ func (r *KubeVirt) getOsMapConfig(providerType api.ProviderType) (configMap *cor
 		configMapName = Settings.VsphereOsConfigMap
 	case api.OVirt:
 		configMapName = Settings.OvirtOsConfigMap
+	case api.Nutanix:
+		// Optional, unlike VSphere/OVirt -- see Settings.NutanixOsConfigMap's
+		// field comment. Unset means no ConfigMap to look up.
+		if Settings.NutanixOsConfigMap == "" {
+			return
+		}
+		configMapName = Settings.NutanixOsConfigMap
 	default:
 		return
 	}

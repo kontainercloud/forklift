@@ -213,6 +213,11 @@ func newPowerTestServer(
 	var transitionBodies []string
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == prismCentralPath:
+			// This test server represents a Prism Element endpoint: 404
+			// here (not the catch-all GET case below) is what
+			// isPrismElement()'s live probe expects to see.
+			w.WriteHeader(http.StatusNotFound)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/clusters/list"):
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"entities":[]}`))
@@ -883,6 +888,131 @@ func TestFinalize_DeletesImages(t *testing.T) {
 	}
 	if _, found := images["image-unrelated"]; !found {
 		t.Fatal("expected an unrelated image to be left alone")
+	}
+}
+
+// newV4PowerTestServer represents a Prism Central endpoint for VM
+// lifecycle: prism_central probe, GET/action on the v4 vmm VM path.
+// $actions/power-on and $actions/shutdown set state to ON/leave running;
+// $actions/power-off sets state to OFF.
+func newV4PowerTestServer(t *testing.T, entity *vmV4) (server *httptest.Server, actions *[]string) {
+	t.Helper()
+	var actionLog []string
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		vmPath := vmV4Path + "/" + entity.ExtID
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == prismCentralPath:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/clusters/list"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"entities":[]}`))
+		case r.Method == http.MethodGet && r.URL.Path == vmPath:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(entity)
+		case r.Method == http.MethodPost && r.URL.Path == vmPath+"/$actions/"+vmV4ActionPowerOn:
+			actionLog = append(actionLog, vmV4ActionPowerOn)
+			entity.PowerState = powerStateOn
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPost && r.URL.Path == vmPath+"/$actions/"+vmV4ActionPowerOff:
+			actionLog = append(actionLog, vmV4ActionPowerOff)
+			entity.PowerState = powerStateOff
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		case r.Method == http.MethodPost && r.URL.Path == vmPath+"/$actions/"+vmV4ActionShutdown:
+			actionLog = append(actionLog, vmV4ActionShutdown)
+			// Leaves the VM running, like a real ACPI request the guest
+			// hasn't processed yet -- matches the v3 test server's
+			// ACPI_SHUTDOWN behavior.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	return server, &actionLog
+}
+
+func TestPowerStateV4_PrismCentral(t *testing.T) {
+	vmID := powerTestVMID(t, "v4-state")
+	server, _ := newV4PowerTestServer(t, &vmV4{ExtID: vmID, PowerState: powerStateOn})
+	defer server.Close()
+
+	client := newConnectedTestClient(t, server.URL)
+	state, err := client.PowerState(ref.Ref{ID: vmID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if state != planapi.VMPowerStateOn {
+		t.Fatalf("expected On, got %s", state)
+	}
+}
+
+func TestPowerOnV4_PrismCentral(t *testing.T) {
+	vmID := powerTestVMID(t, "v4-power-on")
+	server, actions := newV4PowerTestServer(t, &vmV4{ExtID: vmID, PowerState: powerStateOff})
+	defer server.Close()
+
+	client := newConnectedTestClient(t, server.URL)
+	if err := client.PowerOn(ref.Ref{ID: vmID}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*actions) != 1 || (*actions)[0] != vmV4ActionPowerOn {
+		t.Fatalf("expected exactly one power-on action, got %v", *actions)
+	}
+}
+
+func TestPowerOffV4_SubmitsShutdownAction(t *testing.T) {
+	vmID := powerTestVMID(t, "v4-power-off")
+	server, actions := newV4PowerTestServer(t, &vmV4{ExtID: vmID, PowerState: powerStateOn})
+	defer server.Close()
+
+	client := newConnectedTestClient(t, server.URL)
+	if err := client.PowerOff(ref.Ref{ID: vmID}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(*actions) != 1 || (*actions)[0] != vmV4ActionShutdown {
+		t.Fatalf("expected exactly one shutdown action, got %v", *actions)
+	}
+}
+
+func TestPoweredOffV4_ForcesHardOffAfterGracePeriod(t *testing.T) {
+	origGrace := powerOffGracePeriod
+	powerOffGracePeriod = 0
+	defer func() { powerOffGracePeriod = origGrace }()
+
+	vmID := powerTestVMID(t, "v4-force-off")
+	server, actions := newV4PowerTestServer(t, &vmV4{ExtID: vmID, PowerState: powerStateOn})
+	defer server.Close()
+
+	client := newConnectedTestClient(t, server.URL)
+	if err := client.PowerOff(ref.Ref{ID: vmID}); err != nil {
+		t.Fatalf("unexpected error on PowerOff: %v", err)
+	}
+
+	// First call: state is still ON (the mock shutdown action doesn't
+	// change it, matching a real ACPI request the guest hasn't
+	// processed yet), so this call forces the hard power-off action but
+	// hasn't re-checked state within the same call.
+	off, err := client.PoweredOff(ref.Ref{ID: vmID})
+	if err != nil {
+		t.Fatalf("unexpected error on first PoweredOff: %v", err)
+	}
+	if off {
+		t.Fatal("expected PoweredOff to be false before hard off completes")
+	}
+	if len(*actions) != 2 || (*actions)[0] != vmV4ActionShutdown || (*actions)[1] != vmV4ActionPowerOff {
+		t.Fatalf("expected [shutdown power-off], got %v", *actions)
+	}
+
+	// Second call: the mock power-off action already set state to OFF.
+	off, err = client.PoweredOff(ref.Ref{ID: vmID})
+	if err != nil {
+		t.Fatalf("unexpected error on second PoweredOff: %v", err)
+	}
+	if !off {
+		t.Fatal("expected PoweredOff to be true after hard off")
 	}
 }
 

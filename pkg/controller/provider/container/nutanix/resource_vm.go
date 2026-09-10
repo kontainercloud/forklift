@@ -154,10 +154,13 @@ func mergeGuestTools(spec, status libclient.VMGuestTools, m *model.VM) {
 	}
 }
 
-func enrichVM(m *model.VM, storageNames, networkNames map[string]string) {
+func enrichVM(m *model.VM, storageNames, networkNames map[string]string, sharedDiskUUIDs map[string]bool) {
 	for i := range m.Disks {
 		if m.Disks[i].StorageContainerName == "" && m.Disks[i].StorageContainerUUID != "" {
 			m.Disks[i].StorageContainerName = storageNames[m.Disks[i].StorageContainerUUID]
+		}
+		if sharedDiskUUIDs[m.Disks[i].UUID] {
+			m.Disks[i].Shared = true
 		}
 	}
 	for i := range m.NICs {

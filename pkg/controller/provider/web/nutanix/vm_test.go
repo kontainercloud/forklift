@@ -74,3 +74,34 @@ func TestVM_PolicyFieldsRespectDetailLevel(t *testing.T) {
 		t.Errorf("expected Content(2) to include PolicyVersion %d, got %d", m.PolicyVersion, full.PolicyVersion)
 	}
 }
+
+func TestVM_RemoveExcludedDisks(t *testing.T) {
+	r := &VM{}
+	r.Disks = []Disk{
+		{UUID: "disk-1"},
+		{UUID: "disk-2"},
+		{UUID: "disk-3"},
+	}
+
+	r.RemoveExcludedDisks([]string{"disk-2"})
+
+	if len(r.Disks) != 2 {
+		t.Fatalf("expected 2 disks remaining, got %d: %+v", len(r.Disks), r.Disks)
+	}
+	for _, d := range r.Disks {
+		if d.UUID == "disk-2" {
+			t.Fatalf("disk-2 should have been removed, got %+v", r.Disks)
+		}
+	}
+}
+
+func TestVM_RemoveExcludedDisks_EmptyListIsNoop(t *testing.T) {
+	r := &VM{}
+	r.Disks = []Disk{{UUID: "disk-1"}}
+
+	r.RemoveExcludedDisks(nil)
+
+	if len(r.Disks) != 1 {
+		t.Fatalf("expected disks unchanged, got %+v", r.Disks)
+	}
+}

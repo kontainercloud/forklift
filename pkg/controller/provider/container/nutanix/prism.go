@@ -17,6 +17,32 @@ const (
 	// isn't reliably populated when queried through Prism Central; images
 	// registered with PC's image service only show up here.
 	imagesV4Path = "/api/vmm/v4.0/content/images"
+	// subnetsV4Path is Prism Central's networking (v4) subnet list
+	// endpoint. Version pinned to v4.4 to match this session's directly-
+	// verified current official SDK path (see subnetV4Raw's doc comment);
+	// unlike the v4.0 paths above (already proven against a real Prism
+	// Central by earlier work), this hasn't been exercised against a live
+	// server -- see docs/enhancements/nutanix-ahv-migration-maturity.md
+	// Tier 0.
+	subnetsV4Path = "/api/networking/v4.4/config/subnets"
+	// clustersV4Path is Prism Central's clustermgmt (v4) cluster list
+	// endpoint. Same version-pinning caveat as subnetsV4Path: verified
+	// against the current official SDK, not exercised against a live
+	// server. See clusterV4Raw's doc comment for a known capacity-field
+	// gap.
+	clustersV4Path = "/api/clustermgmt/v4.3/config/clusters"
+	// hostsV4Path is Prism Central's clustermgmt (v4) global host list
+	// endpoint (not the per-cluster-nested variant that also exists).
+	// Same version-pinning/unverified-against-a-live-server caveat as the
+	// other v4 paths above.
+	hostsV4Path = "/api/clustermgmt/v4.3/config/hosts"
+	// vmsV4Path is Prism Central's vmm (v4) VM list endpoint. Version
+	// pinned to v4.3, matching the pkg/controller/plan/adapter/nutanix
+	// client's vmV4Path (single-VM GET/lifecycle actions), confirmed
+	// consistent against the same official SDK source used for the other
+	// v4 paths above -- see vmV4Raw's doc comment for the schema this
+	// feeds.
+	vmsV4Path = "/api/vmm/v4.3/ahv/config/vms"
 )
 
 // PrismMode identifies whether the provider URL targets Prism Central or Element.

@@ -1261,6 +1261,21 @@ spec:
                     "net-{{.NetworkIndex}}"
                     "{{if eq .NetworkType "Pod"}}pod{{else}}multus-{{.NetworkIndex}}{{end}}"
                 type: string
+              nutanixGuestConversion:
+                default: false
+                description: |-
+                  NutanixGuestConversion opts a Nutanix-source plan into running the virt-v2v
+                  guest-conversion pod (driver injection, network config rewriting, LUKS/NBDE
+                  decryption) in-place against the already-CDI-imported disk, after cold
+                  migration. Default false: Nutanix VMs migrate today via CDI HTTP import
+                  only, with no guest customization, which is the proven, validated path.
+                  This field has no effect for other source providers.
+
+                  EXPERIMENTAL: this path has not been validated end-to-end against a real
+                  OpenShift + Nutanix Prism Central environment. Enable only if you can
+                  verify the result boots correctly; see Tier 3 in
+                  docs/enhancements/nutanix-ahv-migration-maturity.md for the full caveat.
+                type: boolean
               preserveClusterCpuModel:
                 description: Preserve the CPU model and flags the VM runs with in
                   its oVirt cluster.
@@ -2572,11 +2587,12 @@ spec:
                       type: boolean
                     excludeDisks:
                       description: |-
-                        ExcludeDisks lists vSphere bus addresses to skip during migration (e.g. "scsi0:1").
+                        ExcludeDisks lists provider-specific disk identifiers to skip during migration:
+                        vSphere bus addresses (e.g. "scsi0:1"), Nutanix disk UUIDs.
                         Empty or omitted: migrate all disks (subject to migrateSharedDisks).
                         When set, matching disks are not imported and are not attached to the target VM.
                         Excluding every disk is rejected. Excluding the root/boot disk is allowed with a warning.
-                        vSphere only; other providers ignore this field.
+                        Supported for vSphere and Nutanix only; other providers ignore this field.
                       items:
                         type: string
                       type: array
@@ -3250,11 +3266,12 @@ spec:
                           type: object
                         excludeDisks:
                           description: |-
-                            ExcludeDisks lists vSphere bus addresses to skip during migration (e.g. "scsi0:1").
+                            ExcludeDisks lists provider-specific disk identifiers to skip during migration:
+                            vSphere bus addresses (e.g. "scsi0:1"), Nutanix disk UUIDs.
                             Empty or omitted: migrate all disks (subject to migrateSharedDisks).
                             When set, matching disks are not imported and are not attached to the target VM.
                             Excluding every disk is rejected. Excluding the root/boot disk is allowed with a warning.
-                            vSphere only; other providers ignore this field.
+                            Supported for vSphere and Nutanix only; other providers ignore this field.
                           items:
                             type: string
                           type: array

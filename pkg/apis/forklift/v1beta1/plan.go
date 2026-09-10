@@ -352,6 +352,20 @@ type PlanSpec struct {
 	// - false: Use high-performance VirtIO devices (requires VirtIO drivers already installed in source VM)
 	// +kubebuilder:default:=true
 	UseCompatibilityMode bool `json:"useCompatibilityMode,omitempty"`
+	// NutanixGuestConversion opts a Nutanix-source plan into running the virt-v2v
+	// guest-conversion pod (driver injection, network config rewriting, LUKS/NBDE
+	// decryption) in-place against the already-CDI-imported disk, after cold
+	// migration. Default false: Nutanix VMs migrate today via CDI HTTP import
+	// only, with no guest customization, which is the proven, validated path.
+	// This field has no effect for other source providers.
+	//
+	// EXPERIMENTAL: this path has not been validated end-to-end against a real
+	// OpenShift + Nutanix Prism Central environment. Enable only if you can
+	// verify the result boots correctly; see Tier 3 in
+	// docs/enhancements/nutanix-ahv-migration-maturity.md for the full caveat.
+	// +optional
+	// +kubebuilder:default:=false
+	NutanixGuestConversion bool `json:"nutanixGuestConversion,omitempty"`
 	// Migration type. e.g. "cold", "warm", "live", "conversion". Supersedes the `warm` boolean if set.
 	// +optional
 	// +kubebuilder:validation:Enum=cold;warm;live;conversion
@@ -519,6 +533,36 @@ func (p *Plan) ShouldUseV2vForTransfer(vmRef ref.Ref) (bool, error) {
 	default:
 		return false, nil
 	}
+}
+
+// RequiresGuestConversion returns true if this plan's VMs need a virt-v2v
+// guest-conversion pod (driver injection, network config rewriting,
+// LUKS/NBDE decryption). Providers with a mandatory conversion step
+// (vSphere, OVA, Hyper-V, EC2, Azure) always require it -- see
+// Provider.RequiresConversion(). Nutanix has no mandatory conversion step
+// (its builder.diskBus mapping already preserves AHV's non-virtio bus
+// types, so most VMs boot without it), and its guest-conversion support is
+// new and unvalidated end-to-end against a real OpenShift+Nutanix
+// environment -- see Tier 3 in docs/enhancements/
+// nutanix-ahv-migration-maturity.md -- so it stays off unless a plan
+// explicitly opts in via Spec.NutanixGuestConversion.
+//
+// Callers that already combine Provider.RequiresConversion() with
+// !Spec.SkipGuestConversion should keep doing so around this method --
+// SkipGuestConversion is intentionally not folded in here, to preserve
+// each call site's existing behavior for the providers it already covers.
+func (p *Plan) RequiresGuestConversion() bool {
+	source := p.Provider.Source
+	if source == nil {
+		return false
+	}
+	if source.RequiresConversion() {
+		return true
+	}
+	if source.Type() == Nutanix {
+		return p.Spec.NutanixGuestConversion
+	}
+	return false
 }
 
 func (p *Plan) HasNetAppShiftDestination() bool {

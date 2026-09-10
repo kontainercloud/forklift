@@ -434,7 +434,7 @@ func TestEnrichVM(t *testing.T) {
 		},
 	}
 
-	enrichVM(m, map[string]string{"sc-1": "default-container"}, map[string]string{"net-1": "Production-VLAN"})
+	enrichVM(m, map[string]string{"sc-1": "default-container"}, map[string]string{"net-1": "Production-VLAN"}, nil)
 
 	if m.Disks[0].StorageContainerName != "default-container" {
 		t.Errorf("Expected storage container name to be enriched, got %s", m.Disks[0].StorageContainerName)

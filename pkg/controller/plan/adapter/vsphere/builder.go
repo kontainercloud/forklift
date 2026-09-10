@@ -172,8 +172,6 @@ var legacyIdentifiers = []string{
 // vSphere disk backing file.
 var backingFilePattern = regexp.MustCompile(`-\d\d\d\d\d\d.vmdk`)
 
-var sanitizeNameRx = regexp.MustCompile(`[^a-zA-Z0-9_.-]+`)
-
 // vSphere builder.
 type Builder struct {
 	*plancontext.Context
@@ -2876,13 +2874,13 @@ func (r *Builder) SourceVMLabelsAndAnnotations(vmRef ref.Ref, tagMapping *api.Ta
 	if !tagsDisabled {
 		for _, tag := range vm.Tags {
 			if tagMapping != nil && len(tagMapping.LabelTags) > 0 {
-				if !isInLabelTags(tag.Name, tagMapping.LabelTags) {
+				if !planbase.IsInLabelTags(tag.Name, tagMapping.LabelTags) {
 					continue
 				}
 			}
 
 			originalKey := tag.Name
-			sanitizedKey := sanitizeForK8sMetadata(originalKey)
+			sanitizedKey := planbase.SanitizeForK8sMetadata(originalKey)
 			if sanitizedKey == "" {
 				continue
 			}
@@ -2903,7 +2901,7 @@ func (r *Builder) SourceVMLabelsAndAnnotations(vmRef ref.Ref, tagMapping *api.Ta
 			labelOriginalKeys[key] = originalKey
 
 			originalValue := tag.Description
-			value := sanitizeForK8sMetadata(originalValue)
+			value := planbase.SanitizeForK8sMetadata(originalValue)
 			if value != originalValue && originalValue != "" {
 				sanitizationReport[fmt.Sprintf("tag.value.%s", originalKey)] = value
 			}
@@ -2933,7 +2931,7 @@ func (r *Builder) SourceVMLabelsAndAnnotations(vmRef ref.Ref, tagMapping *api.Ta
 			continue
 		}
 		originalName := def.Name
-		sanitizedName := sanitizeForK8sMetadata(originalName)
+		sanitizedName := planbase.SanitizeForK8sMetadata(originalName)
 		if sanitizedName == "" {
 			continue
 		}
@@ -2955,38 +2953,4 @@ func (r *Builder) SourceVMLabelsAndAnnotations(vmRef ref.Ref, tagMapping *api.Ta
 	}
 
 	return
-}
-
-func isInLabelTags(tagName string, labelTags []string) bool {
-	for _, lt := range labelTags {
-		if strings.EqualFold(tagName, lt) {
-			return true
-		}
-	}
-	return false
-}
-
-func isValidK8sMetadataValue(s string) bool {
-	if s == "" {
-		return true
-	}
-	errs := k8svalidation.IsValidLabelValue(s)
-	return len(errs) == 0
-}
-
-// sanitizeForK8sMetadata makes a string safe for use as a K8s label key/value.
-func sanitizeForK8sMetadata(s string) string {
-	if s == "" {
-		return ""
-	}
-	if isValidK8sMetadataValue(s) {
-		return s
-	}
-	sanitized := sanitizeNameRx.ReplaceAllString(s, "_")
-	sanitized = strings.Trim(sanitized, "_.-")
-	if len(sanitized) > 63 {
-		sanitized = sanitized[:63]
-		sanitized = strings.TrimRight(sanitized, "_.-")
-	}
-	return sanitized
 }

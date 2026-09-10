@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 
 	api "github.com/kubev2v/forklift/pkg/apis/forklift/v1beta1"
@@ -56,6 +57,60 @@ const (
 	labelDownloadCookie = "forklift.konveyor.io/nutanix-download-cookie"
 	cookieHeaderKey     = "cookie"
 )
+
+// Template labels (kubevirt common-templates labeling scheme).
+const (
+	templateOSLabel       = "os.template.kubevirt.io/%s"
+	templateWorkloadLabel = "workload.template.kubevirt.io/server"
+	templateFlavorLabel   = "flavor.template.kubevirt.io/medium"
+)
+
+// Fallback osinfo IDs used when the guest OS can't be classified more
+// specifically.
+const (
+	defaultWindowsOsinfoID = "win10"
+	defaultLinuxOsinfoID   = "rhel8.1"
+	unknownOsinfoID        = "unknown"
+)
+
+// nutanixLabelPrefix namespaces category-derived labels, mirroring
+// vSphere's "vsphere.forklift.konveyor.io/" tag-label prefix.
+const nutanixLabelPrefix = "nutanix.forklift.konveyor.io/"
+
+// osinfoID classifies a Nutanix VM's guest OS into an osinfo template ID,
+// for TemplateLabels/PreferenceName.
+//
+// Unlike vSphere's GuestID or oVirt's OSType, AHV has no fixed enumerated
+// guest-OS-ID list to exact-match against: Nutanix's v3 API's guest_os_id
+// is reported by NGT (Nutanix Guest Tools) introspection rather than
+// selected by the user from a known set at VM-creation time, and Nutanix's
+// own community forums report it commonly comes back empty/null in
+// practice. So, rather than fabricate a vSphere/oVirt-style exact-match
+// table keyed on unverified value strings, this classifies by substring on
+// GuestOSID+GuestOSVersion -- the same fallback tier vSphere/oVirt already
+// use for values outside their own exact-match tables.
+func osinfoID(vm *model.VM) string {
+	combined := strings.ToLower(vm.GuestOSID + " " + vm.GuestOSVersion)
+	switch {
+	case strings.TrimSpace(combined) == "":
+		return unknownOsinfoID
+	case strings.Contains(combined, "win"):
+		return defaultWindowsOsinfoID
+	case containsAny(combined, "linux", "rhel", "red hat", "centos", "ubuntu", "debian", "fedora", "sles", "suse"):
+		return defaultLinuxOsinfoID
+	default:
+		return unknownOsinfoID
+	}
+}
+
+func containsAny(s string, substrs ...string) bool {
+	for _, sub := range substrs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
 
 type Builder struct {
 	*plancontext.Context
@@ -138,6 +193,7 @@ func (r *Builder) VirtualMachine(vmRef ref.Ref, object *cnv.VirtualMachineSpec, 
 	if err != nil {
 		return liberr.Wrap(err, "vm", vmRef.String())
 	}
+	r.removeExcludedDisks(vmRef, vm)
 
 	if object.Template == nil {
 		object.Template = &cnv.VirtualMachineInstanceTemplateSpec{}
@@ -151,6 +207,15 @@ func (r *Builder) VirtualMachine(vmRef ref.Ref, object *cnv.VirtualMachineSpec, 
 	r.mapMemory(vm, object, usesInstanceType)
 
 	return nil
+}
+
+// removeExcludedDisks drops disks listed in the plan VM's excludeDisks
+// (Nutanix disk UUIDs) so they're neither attached to the target VM spec
+// nor transferred via DataVolumes/Tasks.
+func (r *Builder) removeExcludedDisks(vmRef ref.Ref, vm *model.VM) {
+	if planVM, found := r.Plan.Spec.FindVM(vmRef); found && len(planVM.ExcludeDisks) > 0 {
+		vm.RemoveExcludedDisks(planVM.ExcludeDisks)
+	}
 }
 
 func (r *Builder) mapDisks(vm *model.VM, pvcs []*core.PersistentVolumeClaim, object *cnv.VirtualMachineSpec) {
@@ -412,6 +477,7 @@ func (r *Builder) DataVolumes(vmRef ref.Ref, secret *core.Secret, configMap *cor
 	if err = r.Source.Inventory.Find(vm, vmRef); err != nil {
 		return nil, liberr.Wrap(err, "vm", vmRef.String())
 	}
+	r.removeExcludedDisks(vmRef, vm)
 
 	storageMap := map[string]api.DestinationStorage{}
 	for _, mapped := range r.Map.Storage.Spec.Map {
@@ -781,6 +847,7 @@ func (r *Builder) Tasks(vmRef ref.Ref) (tasks []*plan.Task, err error) {
 		err = liberr.Wrap(err, "vm", vmRef.String())
 		return
 	}
+	r.removeExcludedDisks(vmRef, vm)
 
 	for _, disk := range vm.Disks {
 		if disk.IsCdrom {
@@ -800,8 +867,22 @@ func (r *Builder) Tasks(vmRef ref.Ref) (tasks []*plan.Task, err error) {
 	return
 }
 
-func (r *Builder) TemplateLabels(_ ref.Ref) (labels map[string]string, err error) {
+// TemplateLabels sets the kubevirt common-templates labels used to pick a
+// matching VirtualMachineTemplate when no VirtualMachinePreference was
+// found (see PreferenceName's doc comment for why that lookup doesn't
+// resolve for Nutanix today).
+func (r *Builder) TemplateLabels(vmRef ref.Ref) (labels map[string]string, err error) {
+	vm := &model.VM{}
+	err = r.Source.Inventory.Find(vm, vmRef)
+	if err != nil {
+		err = liberr.Wrap(err, "vm", vmRef.String())
+		return
+	}
+
 	labels = make(map[string]string)
+	labels[fmt.Sprintf(templateOSLabel, osinfoID(vm))] = "true"
+	labels[templateWorkloadLabel] = "true"
+	labels[templateFlavorLabel] = "true"
 	return
 }
 
@@ -819,8 +900,47 @@ func (r *Builder) ResolvePersistentVolumeClaimIdentifier(pvc *core.PersistentVol
 	return pvc.Annotations[planbase.AnnDiskSource]
 }
 
-func (r *Builder) PodEnvironment(_ ref.Ref, _ *core.Secret) (env []core.EnvVar, err error) {
-	return nil, nil
+// PodEnvironment supplies the virt-v2v-in-place environment for
+// guest-conversion pods, when Plan.Spec.NutanixGuestConversion opts a
+// Nutanix VM into guest customization -- see Tier 3 in
+// docs/enhancements/nutanix-ahv-migration-maturity.md. Nutanix always
+// runs in-place (ShouldUseV2vForTransfer never returns true for Nutanix,
+// so virt-v2v customizes the disk CDI already imported rather than
+// performing the transfer itself), which means none of the network-source
+// env vars (V2V_libvirtURL/V2V_diskPath/V2V_source) are needed --
+// AppConfig.validate() only requires those when IsInPlace is false.
+func (r *Builder) PodEnvironment(vmRef ref.Ref, _ *core.Secret) (env []core.EnvVar, err error) {
+	vm := &model.VM{}
+	err = r.Source.Inventory.Find(vm, vmRef)
+	if err != nil {
+		err = liberr.Wrap(err, "vm", vmRef.String())
+		return
+	}
+
+	env = append(env, core.EnvVar{
+		Name:  "V2V_vmName",
+		Value: vm.Name,
+	})
+
+	useLegacyDrivers := osinfoID(vm) == defaultWindowsOsinfoID
+	if r.Plan.Spec.InstallLegacyDrivers != nil {
+		useLegacyDrivers = *r.Plan.Spec.InstallLegacyDrivers
+	}
+	if useLegacyDrivers {
+		env = append(env, core.EnvVar{
+			Name:  "VIRTIO_WIN",
+			Value: "/usr/local/virtio-win-legacy.iso",
+		})
+	}
+
+	if planVM, found := r.Plan.Spec.FindVM(vmRef); found && planVM.NbdeClevis {
+		env = append(env, core.EnvVar{
+			Name:  "V2V_NBDE_CLEVIS",
+			Value: "true",
+		})
+	}
+
+	return
 }
 
 func (r *Builder) LunPersistentVolumes(_ ref.Ref) (pvs []core.PersistentVolume, err error) {
@@ -859,8 +979,32 @@ func (r *Builder) GetPopulatorTaskName(_ *core.PersistentVolumeClaim) (string, e
 	return "", nil
 }
 
-func (r *Builder) PreferenceName(_ ref.Ref, _ *core.ConfigMap) (string, error) {
-	return "", nil
+// PreferenceName looks up a VirtualMachinePreference name from configMap,
+// keyed by the VM's raw GuestOSID (mirrors oVirt's PreferenceName, which
+// keys on the raw OSType rather than going through an osinfo-ID mapping
+// first).
+//
+// This has no shipped data source today: Settings.NutanixOsConfigMap is
+// optional and unset by default (unlike VsphereOsConfigMap/OvirtOsConfigMap,
+// which are required), because there's no verified Nutanix guest-OS-ID enum
+// to populate a mapping ConfigMap against yet -- see osinfoID's doc comment.
+// Until an operator configures Settings.NutanixOsConfigMap with a real
+// ConfigMap, configMap.Data is empty and this always returns "". That's
+// operationally fine: kubevirt.go's vmPreference() falls back to
+// TemplateLabels (vmTemplate) whenever PreferenceName returns "", which is
+// implemented.
+func (r *Builder) PreferenceName(vmRef ref.Ref, configMap *core.ConfigMap) (name string, err error) {
+	vm := &model.VM{}
+	err = r.Source.Inventory.Find(vm, vmRef)
+	if err != nil {
+		err = liberr.Wrap(err, "vm", vmRef.String())
+		return
+	}
+	name, ok := configMap.Data[vm.GuestOSID]
+	if !ok {
+		return "", nil
+	}
+	return name, nil
 }
 
 func (r *Builder) ConfigMaps(_ ref.Ref) (list []core.ConfigMap, err error) {
@@ -883,7 +1027,67 @@ func (r *Builder) CsiImportPVCs(_ ref.Ref, _ map[string]string) ([]core.Persiste
 	return nil, nil
 }
 
-func (r *Builder) SourceVMLabelsAndAnnotations(_ ref.Ref, _ *api.TagMapping) (labels map[string]string, annotations map[string]string, sanitizationReport map[string]string, err error) {
-	// TODO: map Nutanix categories to destination labels/annotations
+// SourceVMLabelsAndAnnotations maps Nutanix categories (key:value pairs) to
+// destination labels. Unlike vSphere, which has both tags (->labels) and
+// custom attributes (->annotations) as separate data sources, Nutanix only
+// has categories, so annotations is always empty here.
+func (r *Builder) SourceVMLabelsAndAnnotations(vmRef ref.Ref, tagMapping *api.TagMapping) (labels map[string]string, annotations map[string]string, sanitizationReport map[string]string, err error) {
+	vm := &model.VM{}
+	err = r.Source.Inventory.Find(vm, vmRef)
+	if err != nil {
+		err = liberr.Wrap(err, "vm", vmRef.String())
+		return
+	}
+
+	labels = make(map[string]string)
+	sanitizationReport = make(map[string]string)
+
+	if tagMapping != nil && tagMapping.Disabled {
+		return
+	}
+
+	// Sort category keys for deterministic output; map iteration order is
+	// randomized in Go.
+	categoryKeys := make([]string, 0, len(vm.Categories))
+	for k := range vm.Categories {
+		categoryKeys = append(categoryKeys, k)
+	}
+	sort.Strings(categoryKeys)
+
+	labelOriginalKeys := make(map[string]string)
+	for _, originalKey := range categoryKeys {
+		if tagMapping != nil && len(tagMapping.LabelTags) > 0 {
+			if !planbase.IsInLabelTags(originalKey, tagMapping.LabelTags) {
+				continue
+			}
+		}
+
+		sanitizedKey := planbase.SanitizeForK8sMetadata(originalKey)
+		if sanitizedKey == "" {
+			continue
+		}
+		key := nutanixLabelPrefix + sanitizedKey
+
+		if sanitizedKey != originalKey {
+			sanitizationReport[fmt.Sprintf("category.name.%s", originalKey)] = sanitizedKey
+		}
+		if existingOriginal, exists := labelOriginalKeys[key]; exists {
+			r.Log.Info("Category key collision, later category overwrites earlier",
+				"sanitizedKey", key,
+				"previousCategory", existingOriginal,
+				"currentCategory", originalKey)
+			sanitizationReport[fmt.Sprintf("category.collision.%s", key)] = fmt.Sprintf("%s overwrites %s", originalKey, existingOriginal)
+		}
+		labelOriginalKeys[key] = originalKey
+
+		originalValue := vm.Categories[originalKey]
+		value := planbase.SanitizeForK8sMetadata(originalValue)
+		if value != originalValue && originalValue != "" {
+			sanitizationReport[fmt.Sprintf("category.value.%s", originalKey)] = value
+		}
+
+		labels[key] = value
+	}
+
 	return
 }

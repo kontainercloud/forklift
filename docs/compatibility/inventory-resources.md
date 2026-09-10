@@ -220,30 +220,66 @@ EC2 supports filtering VMs by AWS tags:
 
 ---
 
+### Nutanix AHV
+
+| Resource Type | API Endpoint | Description |
+|---------------|--------------|-------------|
+| **VM** | `/providers/nutanix/{uid}/vms` | Virtual machines |
+| **Network** | `/providers/nutanix/{uid}/networks` | Subnets |
+| **Storage Container** | `/providers/nutanix/{uid}/storagecontainers` | Storage containers |
+| **Host** | `/providers/nutanix/{uid}/hosts` | AHV hosts |
+| **Cluster** | `/providers/nutanix/{uid}/clusters` | Nutanix clusters |
+| **Image** | `/providers/nutanix/{uid}/images` | Catalog images (used internally for disk transfer) |
+| **Workload** | `/providers/nutanix/{uid}/workloads` | Workload groupings |
+
+#### Nutanix VM Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `id` | string | VM UUID |
+| `name` | string | VM name |
+| `cluster` | string | Parent cluster reference |
+| `host` | string | Current AHV host (if running) |
+| `powerState` | string | VM power state |
+| `numSockets` | int | CPU sockets |
+| `numVcpusPerSocket` | int | vCPUs per socket |
+| `memorySizeMib` | int64 | Memory in MiB |
+| `bootType` | string | LEGACY, UEFI, or SECURE_BOOT |
+| `guestOsId` | string | Guest OS identifier |
+| `disks` | []Disk | Attached virtual disks |
+| `nics` | []NIC | Network interfaces |
+| `categories` | map | Nutanix category/value pairs |
+| `guestToolsEnabled` / `guestToolsReachable` | bool | Nutanix Guest Tools status |
+| `concerns` | []Concern | Migration validation concerns (currently always empty; no policy-agent submission loop yet) |
+
+---
+
 ## Resource Summary Matrix
 
-| Resource | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|----------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| VMs | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Networks | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| Storage | Datastores | Storage Domains | Volumes | StorageClasses | Disks | EBS Volumes | Disks |
-| Hosts | Yes | Yes | - | - | - | - | - |
-| Clusters | Yes | Yes | - | - | - | - | - |
-| Datacenters | Yes | Yes | - | - | - | - | - |
-| Folders | Yes | - | - | - | - | - | - |
-| Resource Pools | Yes | - | - | - | - | - | - |
-| Flavors | - | - | Yes | - | - | - | - |
-| Images | - | - | Yes | - | - | - | - |
-| Projects | - | - | Yes | - | - | - | - |
-| Subnets | - | - | Yes | - | - | Yes | - |
-| Namespaces | - | - | - | Yes | - | - | - |
-| PVCs | - | - | - | Yes | - | - | - |
-| DataVolumes | - | - | - | Yes | - | - | - |
-| NIC Profiles | - | Yes | - | - | - | - | - |
-| Disk Profiles | - | Yes | - | - | - | - | - |
-| Volume Types | - | - | Yes | - | - | Yes | - |
-| Snapshots | - | - | Yes | - | - | - | - |
-| Regions | - | - | Yes | - | - | - | - |
+| Resource | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|----------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| VMs | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Networks | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Storage | Datastores | Storage Domains | Volumes | StorageClasses | Disks | EBS Volumes | Disks | Storage Containers |
+| Hosts | Yes | Yes | - | - | - | - | - | Yes |
+| Clusters | Yes | Yes | - | - | - | - | - | Yes |
+| Datacenters | Yes | Yes | - | - | - | - | - | - |
+| Folders | Yes | - | - | - | - | - | - | - |
+| Resource Pools | Yes | - | - | - | - | - | - | - |
+| Flavors | - | - | Yes | - | - | - | - | - |
+| Images | - | - | Yes | - | - | - | - | Yes* |
+| Projects | - | - | Yes | - | - | - | - | - |
+| Subnets | - | - | Yes | - | - | Yes | - | - |
+| Namespaces | - | - | - | Yes | - | - | - | - |
+| PVCs | - | - | - | Yes | - | - | - | - |
+| DataVolumes | - | - | - | Yes | - | - | - | - |
+| NIC Profiles | - | Yes | - | - | - | - | - | - |
+| Disk Profiles | - | Yes | - | - | - | - | - | - |
+| Volume Types | - | - | Yes | - | - | Yes | - | - |
+| Snapshots | - | - | Yes | - | - | - | - | - |
+| Regions | - | - | Yes | - | - | - | - | - |
+
+*Nutanix "Images" are Prism catalog images (`/providers/nutanix/{uid}/images`), which include both pre-existing catalog images and the per-disk catalog images Forklift creates as a transfer staging step during migration.
 
 ---
 

@@ -233,7 +233,7 @@ func AnyNetAppShiftPersistentVolumeClaim(pvcs []*core.PersistentVolumeClaim) boo
 // require guest conversion (oVirt, OpenStack, OCP), EC2 (whose "copy" is
 // a near-instant EBS snapshot-to-volume operation), or on error.
 func HasSeparateCopyAndConversion(plan *api.Plan, vmRef ref.Ref) bool {
-	if plan.Provider.Source == nil || !plan.Provider.Source.RequiresConversion() {
+	if !plan.RequiresGuestConversion() {
 		return false
 	}
 	if plan.Provider.Source.Type() == api.EC2 {

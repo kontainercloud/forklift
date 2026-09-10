@@ -1,0 +1,49 @@
+{
+  "data": [
+    {
+      "extId": "0005f123-4567-89ab-cdef-000000000101",
+      "hostName": "ahv-node-01",
+      "cluster": {"extId": "0005e123-4567-89ab-cdef-000000000001"},
+      "nodeSerial": "SN-101",
+      "blockModel": "NX-3060-G7",
+      "cpuModel": "Intel Xeon Gold 6238",
+      "cpuCapacityHz": 88000000000,
+      "numberOfCpuCores": 32,
+      "numberOfCpuSockets": 2,
+      "numberOfCpuThreads": 64,
+      "memorySizeBytes": 274877906944,
+      "hypervisor": {"fullName": "Nutanix 20240802.100", "numberOfVms": 15}
+    },
+    {
+      "extId": "0005f123-4567-89ab-cdef-000000000102",
+      "hostName": "ahv-node-02",
+      "cluster": {"extId": "0005e123-4567-89ab-cdef-000000000001"},
+      "nodeSerial": "SN-102",
+      "blockModel": "NX-3060-G7",
+      "cpuModel": "Intel Xeon Gold 6238",
+      "cpuCapacityHz": 88000000000,
+      "numberOfCpuCores": 32,
+      "numberOfCpuSockets": 2,
+      "numberOfCpuThreads": 64,
+      "memorySizeBytes": 274877906944,
+      "hypervisor": {"fullName": "Nutanix 20240802.100", "numberOfVms": 10}
+    },
+    {
+      "extId": "0005f123-4567-89ab-cdef-000000000201",
+      "hostName": "ahv-dev-node-01",
+      "cluster": {"extId": "0005e123-4567-89ab-cdef-000000000002"},
+      "nodeSerial": "SN-201",
+      "blockModel": "NX-1065-G7",
+      "cpuModel": "Intel Xeon Silver 4210",
+      "cpuCapacityHz": 40000000000,
+      "numberOfCpuCores": 16,
+      "numberOfCpuSockets": 2,
+      "numberOfCpuThreads": 32,
+      "memorySizeBytes": 137438953472,
+      "hypervisor": {"fullName": "Nutanix 20240802.100", "numberOfVms": 8}
+    }
+  ],
+  "metadata": {
+    "totalAvailableResults": 3
+  }
+}

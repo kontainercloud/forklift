@@ -314,6 +314,45 @@ func NutanixBool(value any) bool {
 	}
 }
 
+// VolumeGroup is a v3 volume_group wire entity. Field shapes verified
+// against Nutanix's own published Go SDK
+// (github.com/nutanix/terraform-provider-nutanix,
+// nutanix/sdks/v3/prism/prism_structs.go), since this endpoint has no
+// entities on the environment this client was developed against.
+type VolumeGroup struct {
+	Metadata Metadata             `json:"metadata"`
+	Spec     VolumeGroupSpec      `json:"spec"`
+	Status   VolumeGroupDefStatus `json:"status"`
+}
+
+type VolumeGroupSpec struct {
+	Name      string               `json:"name"`
+	Resources VolumeGroupResources `json:"resources"`
+}
+
+type VolumeGroupDefStatus struct {
+	Name      string               `json:"name"`
+	State     string               `json:"state"`
+	Resources VolumeGroupResources `json:"resources"`
+}
+
+type VolumeGroupResources struct {
+	SharingStatus     string         `json:"sharing_status"`
+	AttachmentList    []VMAttachment `json:"attachment_list"`
+	DiskList          []VGDisk       `json:"disk_list"`
+	IscsiTargetPrefix string         `json:"iscsi_target_prefix"`
+}
+
+// VMAttachment is one VM attached to a volume group.
+type VMAttachment struct {
+	VMReference Ref `json:"vm_reference"`
+}
+
+// VGDisk is one disk within a volume group.
+type VGDisk struct {
+	VmdiskUUID string `json:"vmdisk_uuid"`
+}
+
 // ParseNumericString parses Nutanix numeric fields that may arrive as strings.
 // ok is false when the value is missing or cannot be parsed.
 func ParseNumericString(value any) (parsed int64, ok bool) {

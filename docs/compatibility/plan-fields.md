@@ -82,12 +82,12 @@ spec:
 
 ### Support Matrix
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `type: cold` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `type: warm` | Yes | Yes* | No | No | No | No | No |
-| `type: live` | No | No | No | Yes** | No | No | No |
-| `type: conversion` | Yes | No | No | No | No | No | No |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `type: cold` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `type: warm` | Yes | Yes* | No | No | No | No | No | No |
+| `type: live` | No | No | No | Yes** | No | No | No | No |
+| `type: conversion` | Yes | No | No | No | No | No | No | No |
 
 *oVirt warm migration requires `FEATURE_OVIRT_WARM_MIGRATION` feature gate
 **OpenShift live migration requires `FEATURE_OCP_LIVE_MIGRATION` feature gate and KubeVirt `DecentralizedLiveMigration` on both clusters
@@ -107,12 +107,12 @@ spec:
 
 ### Support Matrix
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `targetLabels` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `targetNodeSelector` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `targetAffinity` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `targetPowerState` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `targetLabels` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `targetNodeSelector` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `targetAffinity` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `targetPowerState` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 
 ### Example
 
@@ -142,13 +142,13 @@ Settings for the virt-v2v conversion pods.
 
 ### Support Matrix
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `convertorLabels` | Yes | No | No | No | Yes | Yes | Yes |
-| `convertorNodeSelector` | Yes | No | No | No | Yes | Yes | Yes |
-| `convertorAffinity` | Yes | No | No | No | Yes | Yes | Yes |
-| `conversionTempStorageClass` | Yes | No | No | No | Yes | Yes | Yes |
-| `conversionTempStorageSize` | Yes | No | No | No | Yes | Yes | Yes |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `convertorLabels` | Yes | No | No | No | Yes | Yes | Yes | No |
+| `convertorNodeSelector` | Yes | No | No | No | Yes | Yes | Yes | No |
+| `convertorAffinity` | Yes | No | No | No | Yes | Yes | Yes | No |
+| `conversionTempStorageClass` | Yes | No | No | No | Yes | Yes | Yes | No |
+| `conversionTempStorageSize` | Yes | No | No | No | Yes | Yes | Yes | No |
 
 **Note:** Convertor settings only apply to providers that require guest conversion.
 
@@ -179,12 +179,12 @@ Templates for customizing resource names. See [Template Support Matrix](../templ
 
 ### Support Matrix
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `pvcNameTemplate` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `pvcNameTemplateUseGenerateName` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `volumeNameTemplate` | Yes | No | No | No | No | No | No |
-| `networkNameTemplate` | Yes | No | No | No | No | No | No |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `pvcNameTemplate` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `pvcNameTemplateUseGenerateName` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `volumeNameTemplate` | Yes | No | No | No | No | No | No | No |
+| `networkNameTemplate` | Yes | No | No | No | No | No | No | No |
 
 ### Default Templates
 
@@ -206,16 +206,20 @@ Resolution order: VM `pvcNameTemplate` → Plan `pvcNameTemplate` → provider-s
 | `installLegacyDrivers` | *bool | `nil` | Install legacy Windows drivers (auto-detect if nil) |
 | `deleteGuestConversionPod` | bool | `false` | Delete conversion pod after success |
 | `customizationScripts` | ObjectRef | - | ConfigMap with custom scripts |
+| `nutanixGuestConversion` | bool | `false` | **EXPERIMENTAL, Nutanix-only.** Opts a Nutanix-source plan into running virt-v2v in-place against the already-CDI-imported disk for driver injection/NBDE. Not yet validated against a real OpenShift + Nutanix environment — see Tier 3 in `docs/enhancements/nutanix-ahv-migration-maturity.md`. No effect for other providers. |
 
 ### Support Matrix
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `skipGuestConversion` | Yes | No | No | No | No | Yes | No |
-| `useCompatibilityMode` | Yes | No | No | No | No | Yes | No |
-| `installLegacyDrivers` | Yes | No | No | No | Yes | Yes | Yes |
-| `deleteGuestConversionPod` | Yes | No | No | No | Yes | Yes | Yes |
-| `customizationScripts` | Yes | No | No | No | Yes | Yes | Yes |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `skipGuestConversion` | Yes | No | No | No | No | Yes | No | No |
+| `useCompatibilityMode` | Yes | No | No | No | No | Yes | No | No |
+| `installLegacyDrivers` | Yes | No | No | No | Yes | Yes | Yes | Yes* |
+| `deleteGuestConversionPod` | Yes | No | No | No | Yes | Yes | Yes | Yes* |
+| `customizationScripts` | Yes | No | No | No | Yes | Yes | Yes | No |
+| `nutanixGuestConversion` | No | No | No | No | No | No | No | Yes |
+
+*Nutanix's `installLegacyDrivers`/`deleteGuestConversionPod` only take effect when `nutanixGuestConversion` is also set — without it, no conversion pod is ever created for Nutanix, so there is nothing for these fields to act on.
 
 ---
 
@@ -230,12 +234,12 @@ Resolution order: VM `pvcNameTemplate` → Plan `pvcNameTemplate` → provider-s
 
 ### Support Matrix
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `migrateSharedDisks` | Yes | Yes | No | No | No | No | No |
-| `preserveStaticIPs` | Yes | No | No | No | No | No | No |
-| `preserveClusterCPUModel` | No | Yes | No | No | No | No | No |
-| `transferNetwork` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `migrateSharedDisks` | Yes | Yes | No | No | No | No | No | No |
+| `preserveStaticIPs` | Yes | No | No | No | No | No | No | No |
+| `preserveClusterCPUModel` | No | Yes | No | No | No | No | No | No |
+| `transferNetwork` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 
 ---
 
@@ -259,9 +263,9 @@ EC2 migrations automatically add a node selector based on the target AZ. Set `sk
 
 ### Support Matrix
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `runPreflightInspection` | Yes* | No | No | No | No | No | No |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `runPreflightInspection` | Yes* | No | No | No | No | No | No | No |
 
 *Only applies to warm migrations from VMware
 
@@ -281,45 +285,46 @@ All providers support `deleteVmOnFailMigration`.
 
 ## Complete Field Reference
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| **Basic** | | | | | | | |
-| `targetNamespace` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `description` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `archived` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| **Migration Type** | | | | | | | |
-| `type` | cold/warm/conversion | cold/warm* | cold | cold/live** | cold | cold | cold |
-| **Target VM** | | | | | | | |
-| `targetLabels` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `targetNodeSelector` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `targetAffinity` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `targetPowerState` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| **Convertor** | | | | | | | |
-| `convertorLabels` | Yes | - | - | - | Yes | Yes | Yes |
-| `convertorNodeSelector` | Yes | - | - | - | Yes | Yes | Yes |
-| `convertorAffinity` | Yes | - | - | - | Yes | Yes | Yes |
-| `conversionTempStorageClass` | Yes | - | - | - | Yes | Yes | Yes |
-| `conversionTempStorageSize` | Yes | - | - | - | Yes | Yes | Yes |
-| **Templates** | | | | | | | |
-| `pvcNameTemplate` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `pvcNameTemplateUseGenerateName` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| `volumeNameTemplate` | Yes | - | - | - | - | - | - |
-| `networkNameTemplate` | Yes | - | - | - | - | - | - |
-| **Conversion** | | | | | | | |
-| `skipGuestConversion` | Yes | - | - | - | - | - | - |
-| `useCompatibilityMode` | Yes | - | - | - | - | - | - |
-| `installLegacyDrivers` | Yes | - | - | - | Yes | Yes | Yes |
-| `deleteGuestConversionPod` | Yes | - | - | - | Yes | Yes | Yes |
-| `customizationScripts` | Yes | - | - | - | Yes | Yes | Yes |
-| **Storage/Network** | | | | | | | |
-| `migrateSharedDisks` | Yes | Yes | - | - | - | - | - |
-| `preserveStaticIPs` | Yes | - | - | - | - | - | - |
-| `preserveClusterCPUModel` | - | Yes | - | - | - | - | - |
-| `transferNetwork` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
-| **Provider-Specific** | | | | | | | |
-| `skipZoneNodeSelector` | - | - | - | - | - | Yes | - |
-| `runPreflightInspection` | Yes* | - | - | - | - | - | - |
-| **Cleanup** | | | | | | | |
-| `deleteVmOnFailMigration` | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| **Basic** | | | | | | | | |
+| `targetNamespace` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `description` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `archived` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| **Migration Type** | | | | | | | | |
+| `type` | cold/warm/conversion | cold/warm* | cold | cold/live** | cold | cold | cold | cold |
+| **Target VM** | | | | | | | | |
+| `targetLabels` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `targetNodeSelector` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `targetAffinity` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `targetPowerState` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| **Convertor** | | | | | | | | |
+| `convertorLabels` | Yes | - | - | - | Yes | Yes | Yes | - |
+| `convertorNodeSelector` | Yes | - | - | - | Yes | Yes | Yes | - |
+| `convertorAffinity` | Yes | - | - | - | Yes | Yes | Yes | - |
+| `conversionTempStorageClass` | Yes | - | - | - | Yes | Yes | Yes | - |
+| `conversionTempStorageSize` | Yes | - | - | - | Yes | Yes | Yes | - |
+| **Templates** | | | | | | | | |
+| `pvcNameTemplate` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `pvcNameTemplateUseGenerateName` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| `volumeNameTemplate` | Yes | - | - | - | - | - | - | - |
+| `networkNameTemplate` | Yes | - | - | - | - | - | - | - |
+| **Conversion** | | | | | | | | |
+| `skipGuestConversion` | Yes | - | - | - | - | - | - | - |
+| `useCompatibilityMode` | Yes | - | - | - | - | - | - | - |
+| `installLegacyDrivers` | Yes | - | - | - | Yes | Yes | Yes | Yes* |
+| `deleteGuestConversionPod` | Yes | - | - | - | Yes | Yes | Yes | Yes* |
+| `customizationScripts` | Yes | - | - | - | Yes | Yes | Yes | - |
+| `nutanixGuestConversion` | - | - | - | - | - | - | - | Yes |
+| **Storage/Network** | | | | | | | | |
+| `migrateSharedDisks` | Yes | Yes | - | - | - | - | - | - |
+| `preserveStaticIPs` | Yes | - | - | - | - | - | - | - |
+| `preserveClusterCPUModel` | - | Yes | - | - | - | - | - | - |
+| `transferNetwork` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
+| **Provider-Specific** | | | | | | | | |
+| `skipZoneNodeSelector` | - | - | - | - | - | Yes | - | - |
+| `runPreflightInspection` | Yes* | - | - | - | - | - | - | - |
+| **Cleanup** | | | | | | | | |
+| `deleteVmOnFailMigration` | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 
 **Legend:** Yes = Supported, - = Not applicable/supported, * = Conditional

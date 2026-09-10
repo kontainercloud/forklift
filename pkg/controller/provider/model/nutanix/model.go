@@ -196,6 +196,12 @@ type Disk struct {
 	SourceImageUUID      string `json:"sourceImageUuid"`
 	IsCdrom              bool   `json:"isCdrom"`
 	FlashMode            bool   `json:"flashMode"`
+	// Shared is true when this disk is backed by a Nutanix Volume Group
+	// attached to more than one VM (AHV's multi-attach mechanism; see
+	// container/nutanix/resource_volume_group.go). Unlike vSphere, this
+	// isn't visible on the VM's own disk_list -- it requires
+	// cross-referencing the cluster's volume_group entities.
+	Shared bool `json:"shared"`
 }
 
 // Image represents a Nutanix disk image or ISO

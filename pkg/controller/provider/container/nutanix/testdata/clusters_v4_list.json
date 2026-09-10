@@ -1,0 +1,31 @@
+{
+  "data": [
+    {
+      "extId": "0005e123-4567-89ab-cdef-000000000001",
+      "name": "prod-cluster-01",
+      "vmCount": 25,
+      "config": {
+        "buildInfo": {"version": "6.8.2", "fullVersion": "el7.3-release-fraser-6.8.2-stable"},
+        "clusterArch": "X86_64",
+        "operationMode": "NORMAL",
+        "timezone": "America/Los_Angeles",
+        "clusterFunction": ["AOS"]
+      },
+      "network": {
+        "externalAddress": {"ipv4": {"value": "10.10.1.50"}}
+      },
+      "nodes": {"numberOfNodes": 2}
+    },
+    {
+      "extId": "0005e123-4567-89ab-cdef-000000000099",
+      "name": "pc-pseudo-cluster",
+      "vmCount": 0,
+      "config": {
+        "clusterFunction": ["PRISM_CENTRAL"]
+      }
+    }
+  ],
+  "metadata": {
+    "totalAvailableResults": 2
+  }
+}

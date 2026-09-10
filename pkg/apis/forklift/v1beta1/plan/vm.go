@@ -213,11 +213,12 @@ type VM struct {
 	// SELinux labels and cause failures later. Only exclude directories that are known not to need relabeling.
 	// +optional
 	SelinuxRelabelExclude []string `json:"selinuxRelabelExclude,omitempty"`
-	// ExcludeDisks lists vSphere bus addresses to skip during migration (e.g. "scsi0:1").
+	// ExcludeDisks lists provider-specific disk identifiers to skip during migration:
+	// vSphere bus addresses (e.g. "scsi0:1"), Nutanix disk UUIDs.
 	// Empty or omitted: migrate all disks (subject to migrateSharedDisks).
 	// When set, matching disks are not imported and are not attached to the target VM.
 	// Excluding every disk is rejected. Excluding the root/boot disk is allowed with a warning.
-	// vSphere only; other providers ignore this field.
+	// Supported for vSphere and Nutanix only; other providers ignore this field.
 	// +optional
 	ExcludeDisks []string `json:"excludeDisks,omitempty"`
 }

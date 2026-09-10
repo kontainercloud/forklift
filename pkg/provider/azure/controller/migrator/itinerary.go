@@ -80,7 +80,7 @@ func (p *AzurePredicate) Evaluate(flag libitr.Flag) (bool, error) {
 	}
 
 	if flag&ConversionFlag != 0 {
-		return p.context.Source.Provider.RequiresConversion() && !p.context.Plan.Spec.SkipGuestConversion, nil
+		return p.context.Plan.RequiresGuestConversion() && !p.context.Plan.Spec.SkipGuestConversion, nil
 	}
 
 	if flag&CrossRegionFlag != 0 {

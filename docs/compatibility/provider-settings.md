@@ -173,17 +173,41 @@ kubectl get nodes -o jsonpath='{.items[*].metadata.labels.topology\.kubernetes\.
 
 ---
 
+## Nutanix AHV
+
+| Setting | Required | Values | Default | Description |
+|---------|----------|--------|---------|-------------|
+| `prismType` | No | `central`, `element` | Auto-detected | Explicitly declares whether the provider URL is Prism Central or Prism Element, skipping auto-detection. |
+| `clusterUuid` | No | Cluster UUID | None | Cluster UUID to scope inventory collection to when connecting through Prism Central. |
+
+### Prism Type
+
+By default, Forklift probes the provider URL to tell Prism Central and Prism Element apart. Set `prismType` to skip this probe:
+
+```yaml
+spec:
+  type: nutanix
+  url: https://prism-central.example.com:9440
+  settings:
+    prismType: central
+    clusterUuid: 0005d1a2-3b4c-4e5f-6789-0abcdef12345
+```
+
+---
+
 ## Summary Table
 
-| Setting | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|---------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `vddkInitImage` | Yes | - | - | - | - | - | - |
-| `sdkEndpoint` | Yes | - | - | - | - | - | - |
-| `useVddkAioOptimization` | Yes | - | - | - | - | - | - |
-| `vddkConfig` | Yes | - | - | - | - | - | - |
-| `esxiCloneMethod` | Yes | - | - | - | - | - | - |
-| `target-az` | - | - | - | - | - | **Req** | - |
-| `target-region` | - | - | - | - | - | Opt | - |
-| `winrmPort` | - | - | - | - | - | - | Opt |
+| Setting | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|---------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `vddkInitImage` | Yes | - | - | - | - | - | - | - |
+| `sdkEndpoint` | Yes | - | - | - | - | - | - | - |
+| `useVddkAioOptimization` | Yes | - | - | - | - | - | - | - |
+| `vddkConfig` | Yes | - | - | - | - | - | - | - |
+| `esxiCloneMethod` | Yes | - | - | - | - | - | - | - |
+| `target-az` | - | - | - | - | - | **Req** | - | - |
+| `target-region` | - | - | - | - | - | Opt | - | - |
+| `winrmPort` | - | - | - | - | - | - | Opt | - |
+| `prismType` | - | - | - | - | - | - | - | Opt |
+| `clusterUuid` | - | - | - | - | - | - | - | Opt |
 
 **Legend:** Yes = Supported, Opt = Optional, **Req** = Required, - = Not applicable

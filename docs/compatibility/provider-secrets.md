@@ -337,20 +337,56 @@ stringData:
 
 ---
 
+## Nutanix AHV
+
+Authentication to Nutanix Prism Central or Prism Element.
+
+### Required Fields
+
+| Field | Description |
+|-------|-------------|
+| `user` | Prism username |
+| `password` | Prism password |
+
+### Optional Fields
+
+| Field | Description |
+|-------|-------------|
+| `ca.crt` | Prism CA certificate in PEM format (legacy `cacert` field also accepted) |
+| `insecureSkipVerify` | Skip TLS verification (`"true"` or `"false"`) |
+
+### Example
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: nutanix-credentials
+  namespace: openshift-mtv
+type: Opaque
+stringData:
+  user: admin
+  password: "your-password"
+```
+
+**Note:** There is no `thumbprint` alternative for Nutanix (unlike vSphere); use `ca.crt` or `insecureSkipVerify`.
+
+---
+
 ## Summary Table
 
-| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV |
-|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|
-| `user` / `username` | Req | Req | Req* | - | Opt | - | Req |
-| `password` | Req | Req | Req* | - | Opt | - | Req |
-| `token` | - | - | Opt | Req | - | - | - |
-| `ca.crt` | Opt | Opt | Opt | Opt | - | - | Opt |
-| `insecureSkipVerify` | Opt | Opt | Opt | Opt | - | - | Opt |
-| `region` | - | - | Opt | - | - | Req | - |
-| `accessKeyId` | - | - | - | - | - | Req | - |
-| `secretAccessKey` | - | - | - | - | - | Req | - |
-| `projectName` | - | - | Req* | - | - | - | - |
-| `userDomainName` | - | - | Req* | - | - | - | - |
-| `applicationCredentialID` | - | - | Opt | - | - | - | - |
+| Field | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
+|-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
+| `user` / `username` | Req | Req | Req* | - | Opt | - | Req | Req |
+| `password` | Req | Req | Req* | - | Opt | - | Req | Req |
+| `token` | - | - | Opt | Req | - | - | - | - |
+| `ca.crt` | Opt | Opt | Opt | Opt | - | - | Opt | Opt |
+| `insecureSkipVerify` | Opt | Opt | Opt | Opt | - | - | Opt | Opt |
+| `region` | - | - | Opt | - | - | Req | - | - |
+| `accessKeyId` | - | - | - | - | - | Req | - | - |
+| `secretAccessKey` | - | - | - | - | - | Req | - | - |
+| `projectName` | - | - | Req* | - | - | - | - | - |
+| `userDomainName` | - | - | Req* | - | - | - | - | - |
+| `applicationCredentialID` | - | - | Opt | - | - | - | - | - |
 
 **Legend:** Req = Required, Opt = Optional, Req* = Required for specific auth type, - = Not applicable
