@@ -295,3 +295,23 @@ func (r *VM) Content(detail int) interface{} {
 	}
 	return r
 }
+
+// RemoveExcludedDisks drops disks whose UUID appears in ids. Nutanix has no
+// vSphere-style bus-address concept, so disk UUID is the exclude-disks
+// identifier for this provider.
+func (r *VM) RemoveExcludedDisks(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	exclude := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		exclude[id] = struct{}{}
+	}
+	var disks []Disk
+	for _, disk := range r.Disks {
+		if _, skip := exclude[disk.UUID]; !skip {
+			disks = append(disks, disk)
+		}
+	}
+	r.Disks = disks
+}
