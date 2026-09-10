@@ -3130,7 +3130,7 @@ func (r *KubeVirt) setVmLabels(object *cnv.VirtualMachine) (err error) {
 	if object.Labels == nil {
 		object.Labels = make(map[string]string)
 	}
-	if r.Plan.Provider.Source.RequiresConversion() {
+	if r.Plan.RequiresGuestConversion() {
 		object.Labels["guestConverted"] = strconv.FormatBool(!r.Plan.Spec.SkipGuestConversion)
 	}
 	return

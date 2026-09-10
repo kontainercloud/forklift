@@ -82,7 +82,9 @@ Guest conversion (virt-v2v) prepares VMs for KubeVirt by:
 | OVA | Yes | VMware OVF format, needs driver injection |
 | EC2 | Yes | AWS-specific drivers, needs VirtIO |
 | HyperV | Yes | Hyper-V tools removal, VirtIO injection |
-| Nutanix | No | AHV already uses VirtIO drivers; no conversion pod is created (`Provider.RequiresConversion()`, `pkg/apis/forklift/v1beta1/provider.go:213-215`) |
+| Nutanix | No* | AHV already uses VirtIO drivers; no conversion pod is created by default (`Plan.RequiresGuestConversion()`, `pkg/apis/forklift/v1beta1/plan.go`) |
+
+*Nutanix supports an opt-in, EXPERIMENTAL `nutanixGuestConversion` plan field (default `false`) that runs a virt-v2v-in-place conversion pod against the already-CDI-imported disk (driver injection, NBDE decryption). Not yet validated against a real OpenShift + Nutanix environment — see Tier 3 in `docs/enhancements/nutanix-ahv-migration-maturity.md`.
 
 ### Conversion Options
 
@@ -90,8 +92,11 @@ Guest conversion (virt-v2v) prepares VMs for KubeVirt by:
 |-------|-------------|-----------|
 | `skipGuestConversion` | Skip virt-v2v entirely (raw copy mode) | vSphere, EC2 |
 | `useCompatibilityMode` | Use SATA/E1000E instead of VirtIO when skipping conversion | vSphere, EC2 |
-| `installLegacyDrivers` | Install legacy Windows drivers for older OS versions | vSphere, OVA, EC2, HyperV |
-| `deleteGuestConversionPod` | Delete conversion pod after successful migration | All with conversion |
+| `installLegacyDrivers` | Install legacy Windows drivers for older OS versions | vSphere, OVA, EC2, HyperV, Nutanix* |
+| `deleteGuestConversionPod` | Delete conversion pod after successful migration | All with conversion, Nutanix* |
+| `nutanixGuestConversion` | Opt a Nutanix plan into running virt-v2v in-place (EXPERIMENTAL) | Nutanix |
+
+*Only takes effect on Nutanix when `nutanixGuestConversion` is also set.
 
 **Note:** OVA and HyperV always require virt-v2v as it is used for reading their source formats (OVA files, VHDX).
 

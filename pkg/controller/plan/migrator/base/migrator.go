@@ -463,7 +463,7 @@ func (r *BasePredicate) Evaluate(flag libitr.Flag) (allowed bool, err error) {
 	case HasPostHook:
 		_, allowed = r.vm.FindHook(api.PhasePostHook)
 	case RequiresConversion:
-		allowed = r.context.Source.Provider.RequiresConversion() && !r.context.Plan.Spec.SkipGuestConversion
+		allowed = r.context.Plan.RequiresGuestConversion() && !r.context.Plan.Spec.SkipGuestConversion
 	case CDIDiskCopy:
 		var useV2vForTransfer bool
 		useV2vForTransfer, err = r.ensureUseV2vForTransfer()
@@ -499,7 +499,7 @@ func (r *BasePredicate) Evaluate(flag libitr.Flag) (allowed bool, err error) {
 		if !win {
 			break
 		}
-		allowed = r.context.Source.Provider.RequiresConversion() && !r.context.Plan.Spec.SkipGuestConversion
+		allowed = r.context.Plan.RequiresGuestConversion() && !r.context.Plan.Spec.SkipGuestConversion
 	case WaitForFinalSnapshotConsolidation:
 		allowed = settings.Settings.WaitForFinalSnapshotConsolidation
 	}

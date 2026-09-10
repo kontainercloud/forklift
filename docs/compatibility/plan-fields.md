@@ -206,6 +206,7 @@ Resolution order: VM `pvcNameTemplate` → Plan `pvcNameTemplate` → provider-s
 | `installLegacyDrivers` | *bool | `nil` | Install legacy Windows drivers (auto-detect if nil) |
 | `deleteGuestConversionPod` | bool | `false` | Delete conversion pod after success |
 | `customizationScripts` | ObjectRef | - | ConfigMap with custom scripts |
+| `nutanixGuestConversion` | bool | `false` | **EXPERIMENTAL, Nutanix-only.** Opts a Nutanix-source plan into running virt-v2v in-place against the already-CDI-imported disk for driver injection/NBDE. Not yet validated against a real OpenShift + Nutanix environment — see Tier 3 in `docs/enhancements/nutanix-ahv-migration-maturity.md`. No effect for other providers. |
 
 ### Support Matrix
 
@@ -213,9 +214,12 @@ Resolution order: VM `pvcNameTemplate` → Plan `pvcNameTemplate` → provider-s
 |-------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
 | `skipGuestConversion` | Yes | No | No | No | No | Yes | No | No |
 | `useCompatibilityMode` | Yes | No | No | No | No | Yes | No | No |
-| `installLegacyDrivers` | Yes | No | No | No | Yes | Yes | Yes | No |
-| `deleteGuestConversionPod` | Yes | No | No | No | Yes | Yes | Yes | No |
+| `installLegacyDrivers` | Yes | No | No | No | Yes | Yes | Yes | Yes* |
+| `deleteGuestConversionPod` | Yes | No | No | No | Yes | Yes | Yes | Yes* |
 | `customizationScripts` | Yes | No | No | No | Yes | Yes | Yes | No |
+| `nutanixGuestConversion` | No | No | No | No | No | No | No | Yes |
+
+*Nutanix's `installLegacyDrivers`/`deleteGuestConversionPod` only take effect when `nutanixGuestConversion` is also set — without it, no conversion pod is ever created for Nutanix, so there is nothing for these fields to act on.
 
 ---
 
@@ -308,9 +312,10 @@ All providers support `deleteVmOnFailMigration`.
 | **Conversion** | | | | | | | | |
 | `skipGuestConversion` | Yes | - | - | - | - | - | - | - |
 | `useCompatibilityMode` | Yes | - | - | - | - | - | - | - |
-| `installLegacyDrivers` | Yes | - | - | - | Yes | Yes | Yes | - |
-| `deleteGuestConversionPod` | Yes | - | - | - | Yes | Yes | Yes | - |
+| `installLegacyDrivers` | Yes | - | - | - | Yes | Yes | Yes | Yes* |
+| `deleteGuestConversionPod` | Yes | - | - | - | Yes | Yes | Yes | Yes* |
 | `customizationScripts` | Yes | - | - | - | Yes | Yes | Yes | - |
+| `nutanixGuestConversion` | - | - | - | - | - | - | - | Yes |
 | **Storage/Network** | | | | | | | | |
 | `migrateSharedDisks` | Yes | Yes | - | - | - | - | - | - |
 | `preserveStaticIPs` | Yes | - | - | - | - | - | - | - |

@@ -631,6 +631,37 @@ Two deliberate, documented gaps, not guessed at:
 Not yet exercised against a live v4-capable Prism Central — the same
 caveat as Cluster/Subnet/Host's v4 paths above.
 
+**Resolved, 2026-09-10: the "v3 filter mechanism has no v4 equivalent"
+concern above turned out to be moot.** Re-reading the actual implementation
+(not just the API surface) found that `listClusters`/`listHosts`/
+`listVMs`/`listSubnets` never relied on server-side FIQL filtering to begin
+with, on either Prism mode: `listAllV3` is always called with an empty
+filter string (`""`), and cluster-scoping is done uniformly by fetching
+every entity and narrowing client-side via `filterByMatch` afterwards. So
+`ListAllV4`'s lack of a filter parameter was never actually a porting
+obstacle — there was no OData-equivalent to derive, because the v3 path
+being replaced didn't use FIQL filtering for this either. The one
+functional difference worth noting for a future pass: fetching every
+cluster/host/VM/subnet rather than letting the server narrow by cluster is
+an existing v3 behavior, not something this v4 port made worse — a
+server-side filter would be a genuine efficiency improvement on both
+Prism modes, not a Tier-0-specific gap.
+
+**What's left in Tier 0 is exactly one thing: live-server validation.**
+Every v4 path/schema in this tier (cluster, host, subnet, VM listing, and
+VM lifecycle) was sourced from Nutanix's official Go SDK and covered by
+fixture-based tests, but none of it has been exercised against a running
+Prism Central — the lab available during this work is Prism Element only
+(see the lab-probe note above). Closing this needs either Prism Central
+added to that lab, or a Nutanix contact who can confirm the endpoints
+respond as the SDK describes. `MaintenanceState`'s value strings (the
+`Host` field noted above as a lead for the Tier 1 `MaintenanceMode` gap)
+remain unconfirmed too — checked again this session via the same official
+SDK source plus a docs/web search, and the field is documented only as a
+free-form `*string` ("Host Maintenance State") with no enum or example
+values published anywhere found, so it's still deliberately left
+unwired rather than guessed at.
+
 ### Gap Tier 1: Validator correctness
 
 **Status: implemented, 2026-09-10** (Phase 2 — see Implementation History).
@@ -942,6 +973,91 @@ here can render a migrated VM unbootable, and/or destabilize the shared
 pod-building path other providers already depend on) is categorically
 different from this session's other Nutanix-local changes.
 
+**Status: implemented, 2026-09-10, but for a narrower and much
+lower-risk mode than the analysis above — behind an opt-in flag.**
+Re-reading `pkg/virt-v2v/config/variables.go`'s `AppConfig.validate()`
+found that the download/streaming problem above only applies to
+**virt-v2v-does-the-transfer mode** (`ShouldUseV2vForTransfer` returning
+true — the mode vSphere uses when doing a local cold migration). It does
+*not* apply to **virt-v2v-in-place mode** (`V2V_inPlace=1`): `validate()`
+only requires `V2V_diskPath`/`V2V_libvirtURL`/etc. `if !s.IsInPlace`. In
+in-place mode, virt-v2v customizes a disk that's *already been copied* by
+CDI's ordinary HTTP import — exactly what Nutanix's `DataVolumes()`
+already does today, unchanged — and reads it off the same generic
+`/mnt/disks/diskN` PVC mounts every provider's conversion pod already gets
+via `podVolumeMounts`. So the missing piece wasn't a new download/volume
+mechanism at all: it was that `Provider.RequiresConversion()` (the switch
+that puts `PhaseCreateGuestConversionPod`/`PhaseConvertGuest` into the
+migration itinerary at all) never included Nutanix, so the conversion pod
+was never created regardless of anything else.
+
+What actually changed:
+
+- **`Plan.RequiresGuestConversion()`** (`pkg/apis/forklift/v1beta1/
+  plan.go`), a new plan-level method that's `true` for the providers
+  `Provider.RequiresConversion()` already covers, plus Nutanix *only when*
+  the new `Spec.NutanixGuestConversion` field is set. Every call site that
+  previously called `Provider.RequiresConversion()` to gate the
+  conversion-pod itinerary phases and related logic (7 sites across
+  `migration.go`, `kubevirt.go`, `util/utils.go`, the base migrator's
+  predicate, and the Azure/EC2 itineraries) now calls this instead — a
+  behavior-preserving swap for every existing provider, since
+  `RequiresGuestConversion()` is identical to `Provider.RequiresConversion()`
+  for all of them.
+- **`PlanSpec.NutanixGuestConversion`** (new, opt-in, defaults to
+  `false`), so no existing or default-configured Nutanix plan changes
+  behavior. A plan must explicitly set it to try guest customization.
+  Explicitly labeled EXPERIMENTAL in its doc comment, pointing back to
+  this section, since none of this has been exercised against a real
+  OpenShift + Nutanix environment.
+- **`Builder.PodEnvironment`** (`pkg/controller/plan/adapter/nutanix/
+  builder.go`, previously a `nil, nil` stub) now sets `V2V_vmName`
+  always, `VIRTIO_WIN` (legacy driver ISO) when `osinfoID` classifies the
+  VM as Windows (the same substring heuristic Tier 2's `TemplateLabels`
+  already established and documented, reused here rather than
+  re-litigated), and `V2V_NBDE_CLEVIS` when the plan VM's `NbdeClevis`
+  field is set. Deliberately does **not** set `V2V_source`/
+  `V2V_diskPath`/`V2V_libvirtURL` — those are the streaming-mode variables
+  this tier's Range-support finding ruled out, and in-place mode doesn't
+  need them.
+- **`ShouldUseV2vForTransfer` is deliberately untouched** — it still has
+  no `case Nutanix:` and falls through to `default: return false, nil`.
+  This is what forces Nutanix's conversion pod into in-place mode
+  (`resolveConversionResources`'s `res.inPlace = !useV2v || ...`)
+  unconditionally, so the streaming/download problem never comes up. A
+  unit test (`TestShouldUseV2vForTransfer_NutanixAlwaysFalse`) pins this
+  down explicitly so a future change can't silently re-enable the
+  streaming path without a deliberate decision.
+- **`Builder.ConversionPodConfig` needed no changes at all** and remains
+  the empty-struct stub — confirming the design doc's original
+  "`ConversionPodConfigResult` has no init-container/volume capability"
+  finding was a real gap, but for a mode Nutanix doesn't use, not a
+  blocker for the mode it does use.
+
+**What this does *not* cover, and remains genuinely open:** the actual
+guest-customization content itself (driver injection correctness,
+static-IP config rewriting, LUKS/NBDE decryption behavior) is virt-v2v's
+own logic, unchanged and unexercised for Nutanix specifically; this
+change only makes Nutanix's conversion pod get created and run with a
+plausible, minimal environment. Static-IP preservation
+(`V2V_staticIPs`/`V2V_multipleIPsPerNic`, as vSphere/Hyper-V set) is not
+wired up, because it needs guest-reported network config
+(`vm.GuestNetworks`/hostname) that Nutanix's inventory collector doesn't
+gather today — a genuine new-feature-scale gap, not implemented here.
+`V2V_RootDisk` is left unset (virt-v2v's own auto-detection applies),
+matching that this is optional even for providers that do set it. The
+per-provider `case api.Ova, api.VSphere, api.HyperV, api.EC2, api.Azure:`
+switch in `migration.go`'s `PhaseConvertGuest` handling (which fetches
+richer live progress from the running pod via
+`UpdateVmByConvertedConfig`) doesn't include Nutanix — a cosmetic
+progress-reporting gap, not a correctness one, left as-is rather than
+touching that switch too. Above all: **none of this has run against a
+real OpenShift cluster with a real Nutanix VM.** Enabling
+`NutanixGuestConversion` on a real plan and confirming the resulting VM
+actually boots is the necessary next step before recommending this to any
+user, and is exactly why the flag defaults to off and is documented as
+experimental.
+
 ### Gap Tier 4: Warm migration / change tracking
 
 vSphere's warm migration is a real precopy/checkpoint loop backed by CBT:
@@ -1114,7 +1230,7 @@ Proposed Phasing below).
 | Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory, Prism Element image/storage-container handling, and the v3-based VM lifecycle calls in `client.go` — `getVM`, `setPowerState`, `transitionPowerState`) — **VM lifecycle, cluster, subnet, host, and VM listing all done 2026-09-10 (all four inventory entities plus lifecycle)**; remaining work is validating the v4 paths/schemas against a live Prism Central (none of this was exercised against a real server) and the OData-filter/host-maintenance-mode follow-ups noted in Tier 0 | — | Yes |
 | Phase 2 | Tier 1 validator correctness + `validator_test.go` + compatibility-matrix docs update — **done 2026-09-10** | Benefits from Phase 1 landing first (shares the same client code) but not strictly blocked on it | Yes |
 | Phase 3 | Tier 2 items with no external dependency: OS/Preference mapping, shared/excluded-disk model extension + validation, category→label mapping — **done 2026-09-10** | Not strictly blocked on Phase 2, but the shared/excluded-disk validator work benefits from landing after it (same test-fixture patterns) | Yes |
-| Phase 4 | Tier 3 guest customization (conversion pod) | Open Question #2 is resolved (see Tier 3): the mechanism works, but Nutanix's real image endpoint doesn't support the Range requests it needs, so a full-download fallback is required instead of true streaming. Credential passing through libvirt XML `<auth>` is still untested (sandbox-blocked, not design-blocked) | Unblocked enough to scope a first version around the download-fallback path; still needs a credential-passing decision and the guest-customization logic itself |
+| Phase 4 | Tier 3 guest customization (conversion pod) — **implemented 2026-09-10, behind the opt-in `Spec.NutanixGuestConversion` flag (default off)**, but only the in-place mode: the conversion pod now gets created and runs virt-v2v against the already-CDI-imported disk, avoiding the streaming/Range-support problem entirely rather than solving it. The full-download-fallback design this row used to describe (for virt-v2v-does-the-transfer/streaming mode) was not needed and was not built | None remaining to *ship* the code (done); real validation against a live OpenShift + Nutanix environment is the only thing left before recommending the flag to users | Yes — ships inert by default |
 | Phase 5 | Tier 4 warm migration | Phase 0's Nutanix partner-access and version-confirmation results, and reuses Phase 4's disk-access patterns if any | No — blocked on Phase 0, likely also on Phase 4 |
 | Ongoing | Tier 5 tooling/CLI/tests/docs — compatibility docs and `nutanix-setup-guide.md` **done 2026-09-10** | Tracks alongside each phase above | N/A |
 
@@ -1432,6 +1548,44 @@ surface anticipated there either.
   fixtures now that Central mode routes through v4). None of Tier 0's v4
   paths have been exercised against a live Prism Central yet — that
   remains the natural next step once one is available.
+- 2026-09-10 — **Closed the "v3 filter mechanism has no v4 equivalent"
+  Tier 0 concern as moot** (re-reading the actual implementation found
+  cluster/host/VM/subnet scoping was always client-side `filterByMatch`
+  after a full fetch, on both Prism modes, never server-side FIQL
+  filtering — so there was nothing to re-derive for v4), and re-checked
+  `Host.maintenanceState`'s value strings one more time (official SDK plus
+  a web search) — still only documented as a free-form string with no
+  enum or example values published anywhere found, so it remains
+  deliberately unwired. This leaves live-server validation as the one
+  genuinely remaining Tier 0 item.
+- 2026-09-10 — **Implemented Tier 3 (guest customization), behind a new
+  opt-in `Spec.NutanixGuestConversion` plan field (default false).**
+  Re-reading `pkg/virt-v2v/config/variables.go`'s `AppConfig.validate()`
+  found that the Range-support/streaming problem this tier's prior
+  research centered on only applies to virt-v2v-does-the-transfer mode;
+  virt-v2v-in-place mode customizes a disk CDI already imported via
+  ordinary HTTP, needing no new download/volume machinery at all — the
+  actual gap was that `Provider.RequiresConversion()` never included
+  Nutanix, so the conversion pod was never created regardless. Added
+  `Plan.RequiresGuestConversion()` (true for existing
+  `Provider.RequiresConversion()` providers, plus Nutanix only when the
+  new flag is set) and swapped all 7 `Provider.RequiresConversion()` call
+  sites across `migration.go`, `kubevirt.go`, `util/utils.go`, the base
+  migrator's predicate, and the Azure/EC2 itineraries to use it —
+  behavior-preserving for every existing provider. Implemented
+  `Builder.PodEnvironment` (`V2V_vmName`, `VIRTIO_WIN` for Windows via the
+  existing `osinfoID` heuristic, `V2V_NBDE_CLEVIS`), deliberately without
+  `V2V_source`/`V2V_diskPath`/`V2V_libvirtURL`. `ShouldUseV2vForTransfer`
+  and `ConversionPodConfig` needed no changes — confirming the earlier
+  "no init-container/volume capability" finding was real, but for a mode
+  Nutanix doesn't use. Unit-tested (`RequiresGuestConversion`,
+  `ShouldUseV2vForTransfer` staying false for Nutanix, `PodEnvironment`'s
+  three cases); `make manifests` regenerated the CRD for the new field
+  (pure addition). Static-IP preservation and richer live-progress
+  reporting are known, documented, non-blocking gaps left for a future
+  pass. None of this has run against a real OpenShift + Nutanix
+  environment — that remains the precondition for recommending the flag
+  to any user, which is why it ships off by default.
 
 ## Drawbacks
 

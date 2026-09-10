@@ -67,12 +67,14 @@ Forklift supports migration from the following source platforms:
 
 | Feature | vSphere | oVirt | OpenStack | OpenShift | OVA | EC2 | HyperV | Nutanix |
 |---------|:-------:|:-----:|:---------:|:---------:|:---:|:---:|:------:|:-------:|
-| Requires virt-v2v | Yes* | No | No | No | Yes | Yes* | Yes | No |
-| Driver injection | Yes | No | No | No | Yes | Yes | Yes | No |
+| Requires virt-v2v | Yes* | No | No | No | Yes | Yes* | Yes | No** |
+| Driver injection | Yes | No | No | No | Yes | Yes | Yes | No** |
 | Windows support | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 | Linux support | Yes | Yes | Yes | Yes | Yes | Yes | Yes | Yes |
 
-*vSphere and EC2 support `skipGuestConversion` to bypass virt-v2v; use `useCompatibilityMode` for SATA/E1000E devices or ensure VirtIO drivers are pre-installed. OVA and HyperV always require virt-v2v. Nutanix AHV VMs already use VirtIO natively (like oVirt/OpenStack), so Forklift never runs a conversion pod for Nutanix sources (`Provider.RequiresConversion()`, `pkg/apis/forklift/v1beta1/provider.go:213-215`).
+*vSphere and EC2 support `skipGuestConversion` to bypass virt-v2v; use `useCompatibilityMode` for SATA/E1000E devices or ensure VirtIO drivers are pre-installed. OVA and HyperV always require virt-v2v.
+
+**Nutanix AHV VMs already use VirtIO natively (like oVirt/OpenStack), so Forklift does not run a conversion pod for Nutanix sources by default. An opt-in, experimental `nutanixGuestConversion` plan field (default `false`) runs virt-v2v in-place against the already-CDI-imported disk when set — see `Plan.RequiresGuestConversion()` in `pkg/apis/forklift/v1beta1/plan.go` and Tier 3 in `docs/enhancements/nutanix-ahv-migration-maturity.md`. Not yet validated against a real OpenShift + Nutanix environment; leave unset unless you can verify the result boots correctly.
 
 ### Key Features
 

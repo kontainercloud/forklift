@@ -900,8 +900,47 @@ func (r *Builder) ResolvePersistentVolumeClaimIdentifier(pvc *core.PersistentVol
 	return pvc.Annotations[planbase.AnnDiskSource]
 }
 
-func (r *Builder) PodEnvironment(_ ref.Ref, _ *core.Secret) (env []core.EnvVar, err error) {
-	return nil, nil
+// PodEnvironment supplies the virt-v2v-in-place environment for
+// guest-conversion pods, when Plan.Spec.NutanixGuestConversion opts a
+// Nutanix VM into guest customization -- see Tier 3 in
+// docs/enhancements/nutanix-ahv-migration-maturity.md. Nutanix always
+// runs in-place (ShouldUseV2vForTransfer never returns true for Nutanix,
+// so virt-v2v customizes the disk CDI already imported rather than
+// performing the transfer itself), which means none of the network-source
+// env vars (V2V_libvirtURL/V2V_diskPath/V2V_source) are needed --
+// AppConfig.validate() only requires those when IsInPlace is false.
+func (r *Builder) PodEnvironment(vmRef ref.Ref, _ *core.Secret) (env []core.EnvVar, err error) {
+	vm := &model.VM{}
+	err = r.Source.Inventory.Find(vm, vmRef)
+	if err != nil {
+		err = liberr.Wrap(err, "vm", vmRef.String())
+		return
+	}
+
+	env = append(env, core.EnvVar{
+		Name:  "V2V_vmName",
+		Value: vm.Name,
+	})
+
+	useLegacyDrivers := osinfoID(vm) == defaultWindowsOsinfoID
+	if r.Plan.Spec.InstallLegacyDrivers != nil {
+		useLegacyDrivers = *r.Plan.Spec.InstallLegacyDrivers
+	}
+	if useLegacyDrivers {
+		env = append(env, core.EnvVar{
+			Name:  "VIRTIO_WIN",
+			Value: "/usr/local/virtio-win-legacy.iso",
+		})
+	}
+
+	if planVM, found := r.Plan.Spec.FindVM(vmRef); found && planVM.NbdeClevis {
+		env = append(env, core.EnvVar{
+			Name:  "V2V_NBDE_CLEVIS",
+			Value: "true",
+		})
+	}
+
+	return
 }
 
 func (r *Builder) LunPersistentVolumes(_ ref.Ref) (pvs []core.PersistentVolume, err error) {
