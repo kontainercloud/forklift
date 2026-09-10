@@ -1250,13 +1250,92 @@ later, but the actual next step for this tier is a design decision (build
 a custom populator? wait on upstream CDI? accept full-disk-per-cycle as
 "warm" in name only?), not more code.
 
+**Candidate delta-consumption mechanism, researched 2026-09-10: attach the
+source VM's disk to a Volume Group and read changed byte ranges over
+iSCSI, bypassing the HTTP catalog-image endpoint entirely.** Following up
+on option (b) above (a Forklift-authored custom populator), the question
+is what transport that populator would use to actually fetch bytes, given
+Nutanix's HTTP image-download endpoint doesn't support Range requests.
+Researched against Nutanix's official Go SDKs (`volumes-go-client`
+alongside `dataprotection-go-client`, same primary-source discipline as
+the rest of this document) rather than guessing, since Nutanix's own
+"contact your backup vendor" framing on the CRT API implies backup
+vendors have *some* documented way to read the bytes CRT tells them
+changed — a mechanism this document hadn't previously investigated.
+
+The pieces, each independently confirmed against the SDK:
+
+- **Volume Groups support external (non-Nutanix) iSCSI client
+  attachment.** `volumes-go-client`'s `AttachIscsiClient`
+  (`POST /api/volumes/v4.3/config/volume-groups/{extId}/$actions/
+  attach-iscsi-client`, GA) attaches a client identified by IQN name or
+  network address, with optional CHAP authentication
+  (`IscsiClient{IscsiInitiatorName, ClientSecret, EnabledAuthentications}`).
+  This is standard, mainstream Nutanix functionality (the same mechanism
+  external database servers use to consume Nutanix storage directly),
+  not something exotic to this use case.
+- **A Volume Group's disk can reference an existing VM's live disk,
+  rather than only holding disks created fresh for it.** The v3 API's
+  `VGDisk` (`VolumeGroupResources.DiskList`, sourced from
+  `terraform-provider-nutanix`'s `nutanix/sdks/v3/prism/prism_structs.go`)
+  has both `VmdiskUUID` (the disk's identifier) and a separate
+  `DataSourceReference` (a clone-from-source reference, the same pattern
+  used for VM disk creation). This document already has empirical
+  evidence this kind of disk-sharing between a VM and a Volume Group is
+  real, not just theoretical: Tier 2's shared-disk detection (`Disk.Shared`,
+  `resource_volume_group.go`) was built by observing that real Nutanix
+  configurations have Volume Groups whose `disk_list` entries reference
+  the same `vmdisk_uuid` as an existing VM's own disk.
+- **iSCSI itself is a random-access block protocol** — a SCSI `READ`
+  command specifies an LBA and block count, with no dependency on HTTP
+  Range support at all. Attaching a disk via iSCSI sidesteps the
+  Range-support blocker (Tier 3's finding, and the reason this tier's
+  earlier download-fallback framing existed) entirely, for any read, not
+  just delta reads.
+
+**The resulting candidate design:** a Forklift-managed Volume Group with
+the source VM's disk attached (shared, not cloned — no temporary VM or
+recovery-point restore needed, since `RestoreRecoveryPoint`'s only
+lightweight-restore targets are VM or Volume-Group recovery points,
+neither of which offers a direct "mount read-only" action — restoring to
+a full VM was considered and rejected as unnecessarily heavy once the
+disk-sharing approach was found); a Forklift-authored populator pod
+(mirroring `vsphere-copy-offload-populator.md`'s pattern) with an iSCSI
+initiator attaches to that Volume Group via CHAP-authenticated
+`attach-iscsi-client`; the CRT API (already-verified schema above)
+supplies the changed offset/length list between precopy passes; the
+populator seeks to each offset over the iSCSI-attached block device and
+writes only those bytes into the destination PVC. The final (post-cutover)
+pass reads a now-static disk, matching the consistency model vSphere/
+oVirt's warm migration already relies on for their final passes; earlier
+precopy passes read a live, still-being-written-to disk, which is the
+same inherent fuzziness CBT-based precopy already has for every provider
+that supports it today, not a new risk this introduces.
+
+**This is a real, coherent, SDK-grounded design candidate — not a
+confirmed one.** Nothing above was tested against a live cluster (no
+Prism Central was available this session), and two specific claims are
+inferred from parallel structure rather than directly confirmed: whether
+creating a *new*, empty Volume Group and attaching an *existing* VM's
+disk to it (as opposed to a VM disk that was already Volume-Group-backed
+from creation) is actually a supported operation via the v3/v4 APIs
+rather than just something the schema doesn't explicitly forbid, and
+whether concurrent VM+external-iSCSI-client access to the same disk is
+officially supported without side effects (both plausible given the
+shared-disk evidence above, but neither independently verified). If this
+path is pursued, validating those two points against a real Prism
+Central should be the first step, before any populator code is written.
+
 **Estimated effort:** Open Questions #1 and #4 (API access/GA status) are
 now resolved. The CRT client-code implementation itself is a known,
 moderate-sized, schema-grounded effort (comparable to Tier 0's inventory
-port). The real unknown is the delta-consumption mechanism (custom
-populator vs. upstream CDI work), which is unscoped and should be treated
-as its own research/design spike before any implementation estimate is
-attached to this tier.
+port). The delta-consumption mechanism now has a credible candidate
+design (above) rather than being a fully open question, but building a
+custom populator (iSCSI initiator in a pod, CHAP credential handling,
+offset-based partial writes to a PVC) is still new-feature-scale
+engineering, comparable in size to `vsphere-copy-offload-populator.md`'s
+xcopy populator, and the two unconfirmed points above should be validated
+against a real cluster before committing to it.
 
 ### Gap Tier 5: Tooling, CLI, tests, docs
 
@@ -1748,6 +1827,27 @@ surface anticipated there either.
   verified CRT schema as groundwork and reframes the real remaining
   blocker as a delta-consumption design decision (custom populator vs.
   upstream CDI work), not Nutanix partner access.
+- 2026-09-10 — **Researched a candidate solution to Tier 4's
+  delta-consumption blocker: Volume Group + external iSCSI attachment as
+  the read transport for a custom populator**, following up on the
+  "custom populator" option from the previous entry. Confirmed against
+  `volumes-go-client` (same official-SDK discipline as everything else)
+  that Volume Groups support external iSCSI client attachment
+  (CHAP-authenticated, GA at `v4.3`) and that a Volume Group's disk list
+  can reference an existing VM's live disk rather than only disks created
+  fresh for it — the same sharing relationship Tier 2's `SharedDisks`
+  detection already found real evidence of this session. Since iSCSI is
+  a random-access block protocol, this sidesteps the Range-support
+  blocker entirely (not just for CRT deltas, but for any disk read).
+  Wrote up the resulting candidate design (Forklift-managed Volume Group
+  with the source disk attached, an iSCSI-initiator populator pod reading
+  CRT-computed offsets, writing only those bytes to the destination PVC)
+  in Tier 4, clearly marked as SDK-grounded but not live-tested, with the
+  two specific unconfirmed claims called out (new-VG-to-existing-disk
+  attachment, and concurrent VM+external-client access) as the first
+  things to validate against a real cluster before writing populator
+  code. No code was written this pass — this was research only, per the
+  user's request.
 
 ## Drawbacks
 
