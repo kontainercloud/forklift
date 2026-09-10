@@ -30,6 +30,25 @@ const (
 	powerStateTransitionAcpiShutdown = "ACPI_SHUTDOWN"
 )
 
+// Nutanix v4 VM lifecycle (vmm namespace, Prism Central only -- Prism
+// Element has no v4 surface, confirmed by direct probe against a
+// Prism-Element-only lab: see docs/enhancements/nutanix-ahv-migration-maturity.md
+// Tier 0). Path and action names confirmed GA (no .aN/.bN EA/RC suffix)
+// against Nutanix's own currently-published Go client
+// (github.com/nutanix/ntnx-api-golang-clients, vmm-go-client/api/vm_api.go):
+// ListVms/GetVmById at this path, PowerOnVm/PowerOffVm/ShutdownVm as the
+// $actions below. ShutdownVm's doc comment: "Collaborative shutdown of a
+// Virtual Machine through the ACPI support in the operating system" --
+// the v4 equivalent of v3's ACPI_SHUTDOWN transition. PowerOffVm's doc
+// comment: "equivalent to removing the power cable" -- the v4 equivalent
+// of v3's hard OFF transition.
+const (
+	vmV4Path           = "/api/vmm/v4.3/ahv/config/vms"
+	vmV4ActionPowerOn  = "power-on"
+	vmV4ActionPowerOff = "power-off"
+	vmV4ActionShutdown = "shutdown"
+)
+
 // powerOffGracePeriod is how long WaitForPowerOff waits for an ACPI shutdown
 // before forcing power off. Matches the graceful-first pattern used by other
 // Forklift providers (vSphere ShutdownGuest, oVirt Shutdown, etc.), with a
@@ -127,13 +146,14 @@ func (r *Client) DetachDisks(_ ref.Ref) error {
 }
 
 // PowerState returns the VM's current power state, read live from the
-// Nutanix v3 API (not the, possibly stale, inventory cache).
+// Nutanix API (not the, possibly stale, inventory cache). Uses v4 against
+// Prism Central, v3 against Prism Element (which has no v4 surface).
 func (r *Client) PowerState(vmRef ref.Ref) (planapi.VMPowerState, error) {
-	entity, err := r.getVM(vmRef)
+	state, err := r.fetchVMPowerState(vmRef)
 	if err != nil {
 		return planapi.VMPowerStateUnknown, err
 	}
-	switch entity.PowerState() {
+	switch state {
 	case powerStateOn:
 		return planapi.VMPowerStateOn, nil
 	case powerStateOff:
@@ -152,7 +172,7 @@ func (r *Client) PowerOn(vmRef ref.Ref) error {
 	if state == planapi.VMPowerStateOn {
 		return nil
 	}
-	return r.setPowerState(vmRef, powerStateOn)
+	return r.powerOnVM(vmRef)
 }
 
 // PowerOff initiates a graceful ACPI shutdown unless the VM is already off.
@@ -168,9 +188,9 @@ func (r *Client) PowerOff(vmRef ref.Ref) error {
 	}
 	key := powerOffKey(string(r.Context.Migration.UID), vmRef.ID)
 	powerOffStates.LoadOrStore(key, powerOffState{started: time.Now()})
-	if err := r.transitionPowerState(vmRef, powerStateTransitionAcpiShutdown); err != nil {
+	if err := r.acpiShutdownVM(vmRef); err != nil {
 		r.Context.Log.Error(err, "ACPI shutdown failed, forcing power off", "vm", vmRef.String())
-		return r.transitionPowerState(vmRef, powerStateTransitionOff)
+		return r.hardPowerOffVM(vmRef)
 	}
 	return nil
 }
@@ -195,7 +215,7 @@ func (r *Client) PoweredOff(vmRef ref.Ref) (bool, error) {
 	}
 	tracking := raw.(powerOffState)
 	if !tracking.hardOffSent && time.Since(tracking.started) >= powerOffGracePeriod {
-		if err := r.transitionPowerState(vmRef, powerStateTransitionOff); err != nil {
+		if err := r.hardPowerOffVM(vmRef); err != nil {
 			return false, err
 		}
 		tracking.hardOffSent = true
@@ -263,6 +283,99 @@ func (r *Client) transitionPowerState(vmRef ref.Ref, transition string) error {
 		)
 	}
 	return nil
+}
+
+// vmV4 is the subset of the v4 vmm Vm entity this client needs.
+type vmV4 struct {
+	ExtID      string `json:"extId"`
+	PowerState string `json:"powerState"`
+}
+
+// getVMV4 fetches a VM by extId from the v4 vmm API (Prism Central only).
+func (r *Client) getVMV4(vmRef ref.Ref) (entity vmV4, err error) {
+	url := fmt.Sprintf("%s%s/%s", r.URL, vmV4Path, vmRef.ID)
+	status, err := r.Get(url, &entity)
+	if err != nil {
+		return vmV4{}, liberr.Wrap(err, "vm", vmRef.String())
+	}
+	if status != http.StatusOK {
+		return vmV4{}, liberr.New("unexpected status fetching VM", "vm", vmRef.String(), "status", status)
+	}
+	return entity, nil
+}
+
+// postVMActionV4 submits a no-body v4 VM lifecycle action, e.g.
+// power-on/power-off/shutdown.
+func (r *Client) postVMActionV4(vmRef ref.Ref, action string) error {
+	url := fmt.Sprintf("%s%s/%s/$actions/%s", r.URL, vmV4Path, vmRef.ID, action)
+	status, err := r.Post(url, nil, nil)
+	if err != nil {
+		return liberr.Wrap(err, "vm", vmRef.String(), "action", action)
+	}
+	if status != http.StatusOK && status != http.StatusAccepted {
+		return liberr.New("unexpected status on VM action", "vm", vmRef.String(), "action", action, "status", status)
+	}
+	return nil
+}
+
+// fetchVMPowerState reads the VM's current power state, v4 against Prism
+// Central and v3 against Prism Element.
+func (r *Client) fetchVMPowerState(vmRef ref.Ref) (string, error) {
+	element, err := r.isPrismElement()
+	if err != nil {
+		return "", err
+	}
+	if element {
+		entity, err := r.getVM(vmRef)
+		if err != nil {
+			return "", err
+		}
+		return entity.PowerState(), nil
+	}
+	entity, err := r.getVMV4(vmRef)
+	if err != nil {
+		return "", err
+	}
+	return entity.PowerState, nil
+}
+
+// powerOnVM powers on the VM, v4 against Prism Central and v3 against
+// Prism Element.
+func (r *Client) powerOnVM(vmRef ref.Ref) error {
+	element, err := r.isPrismElement()
+	if err != nil {
+		return err
+	}
+	if element {
+		return r.setPowerState(vmRef, powerStateOn)
+	}
+	return r.postVMActionV4(vmRef, vmV4ActionPowerOn)
+}
+
+// acpiShutdownVM requests a collaborative (in-guest ACPI) shutdown, v4
+// against Prism Central and v3 against Prism Element.
+func (r *Client) acpiShutdownVM(vmRef ref.Ref) error {
+	element, err := r.isPrismElement()
+	if err != nil {
+		return err
+	}
+	if element {
+		return r.transitionPowerState(vmRef, powerStateTransitionAcpiShutdown)
+	}
+	return r.postVMActionV4(vmRef, vmV4ActionShutdown)
+}
+
+// hardPowerOffVM forces power off (no in-guest cooperation), v4 against
+// Prism Central and v3 against Prism Element.
+func (r *Client) hardPowerOffVM(vmRef ref.Ref) error {
+	element, err := r.isPrismElement()
+	if err != nil {
+		return err
+	}
+	if element {
+		return r.transitionPowerState(vmRef, powerStateTransitionOff)
+	}
+	return r.postVMActionV4(vmRef, vmV4ActionPowerOff)
 }
 
 func (r *Client) CreateSnapshot(_ ref.Ref, _ util.HostsFunc) (string, string, error) {
