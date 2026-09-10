@@ -4,6 +4,7 @@ package plan
 import (
 	"context"
 	"encoding/json"
+	"os"
 
 	k8snet "github.com/k8snetworkplumbingwg/network-attachment-definition-client/pkg/apis/k8s.cni.cncf.io/v1"
 	v1beta1 "github.com/kubev2v/forklift/pkg/apis/forklift/v1beta1"
@@ -1178,5 +1179,38 @@ var _ = ginkgo.Describe("PVC name template", func() {
 			Expect(objectMeta.GenerateName).To(Equal("test-plan-vm-1-"))
 			Expect(objectMeta.Name).To(BeEmpty())
 		})
+	})
+})
+
+var _ = ginkgo.Describe("getOsMapConfig", func() {
+	ginkgo.AfterEach(func() {
+		Settings.NutanixOsConfigMap = ""
+	})
+
+	ginkgo.It("returns an empty ConfigMap for Nutanix when NutanixOsConfigMap is unset", func() {
+		Settings.NutanixOsConfigMap = ""
+		kv := createKubeVirt()
+
+		cm, err := kv.getOsMapConfig(v1beta1.Nutanix)
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(cm.Data).To(BeEmpty())
+	})
+
+	ginkgo.It("looks up the configured ConfigMap for Nutanix when NutanixOsConfigMap is set", func() {
+		Expect(os.Setenv("POD_NAMESPACE", "test-ns")).To(Succeed())
+		defer func() { _ = os.Unsetenv("POD_NAMESPACE") }()
+		Settings.NutanixOsConfigMap = "nutanix-os-map"
+
+		cmObj := &v1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{Name: "nutanix-os-map", Namespace: "test-ns"},
+			Data:       map[string]string{"rhel8": "rhel.8"},
+		}
+		kv := createKubeVirt(cmObj)
+
+		cm, err := kv.getOsMapConfig(v1beta1.Nutanix)
+
+		Expect(err).ToNot(HaveOccurred())
+		Expect(cm.Data["rhel8"]).To(Equal("rhel.8"))
 	})
 })

@@ -3195,6 +3195,13 @@ func (r *KubeVirt) getOsMapConfig(providerType api.ProviderType) (configMap *cor
 		configMapName = Settings.VsphereOsConfigMap
 	case api.OVirt:
 		configMapName = Settings.OvirtOsConfigMap
+	case api.Nutanix:
+		// Optional, unlike VSphere/OVirt -- see Settings.NutanixOsConfigMap's
+		// field comment. Unset means no ConfigMap to look up.
+		if Settings.NutanixOsConfigMap == "" {
+			return
+		}
+		configMapName = Settings.NutanixOsConfigMap
 	default:
 		return
 	}

@@ -34,6 +34,7 @@ const (
 	SnapshotRemovalCheckRetries            = "SNAPSHOT_REMOVAL_CHECK_RETRIES"
 	OvirtOsConfigMap                       = "OVIRT_OS_MAP"
 	VsphereOsConfigMap                     = "VSPHERE_OS_MAP"
+	NutanixOsConfigMap                     = "NUTANIX_OS_MAP"
 	VirtCustomizeConfigMap                 = "VIRT_CUSTOMIZE_MAP"
 	NAAOUIMapConfigMap                     = "NAA_OUI_MAP"
 	VddkJobActiveDeadline                  = "VDDK_JOB_ACTIVE_DEADLINE"
@@ -129,6 +130,11 @@ type Migration struct {
 	OvirtOsConfigMap string
 	// vSphere OS config map name
 	VsphereOsConfigMap string
+	// Nutanix OS config map name (optional -- unlike Ovirt/VsphereOsConfigMap,
+	// there is no verified Nutanix guest-OS-ID enum to ship a mapping table
+	// against yet, so this isn't required at startup; PreferenceName simply
+	// never resolves for Nutanix until it's set).
+	NutanixOsConfigMap string
 	// vSphere OS config map name
 	VirtCustomizeConfigMap string
 	// NAA OUI map config map name (optional, for custom vendor→NAA mappings)
@@ -285,6 +291,10 @@ func (r *Migration) Load() (err error) {
 		r.VsphereOsConfigMap = val
 	} else if Settings.Has(MainRole) {
 		return liberr.Wrap(fmt.Errorf("failed to find environment variable %s", VsphereOsConfigMap))
+	}
+	// Optional, unlike Ovirt/VsphereOsConfigMap -- see the field comment.
+	if val, found := os.LookupEnv(NutanixOsConfigMap); found {
+		r.NutanixOsConfigMap = val
 	}
 	if r.VddkJobActiveDeadline, err = getPositiveEnvLimit(VddkJobActiveDeadline, 300); err != nil {
 		return liberr.Wrap(err)
