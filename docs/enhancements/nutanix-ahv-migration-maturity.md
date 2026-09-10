@@ -36,14 +36,81 @@ see-also:
    (partner/API access, licensing, support commitments) before Phase 5
    (warm migration) can be scoped as `implementable`. See
    [Warm migration / CBT feasibility](#gap-tier-4-warm-migration--change-tracking).
-2. **Can virt-v2v's `-i disk` input mode run against a network-attached
+2. ~~Can virt-v2v's `-i disk` input mode run against a network-attached
    block device (nbdkit `curl`/`ssh` plugin) rather than a fully-downloaded
-   local file?** This determines whether Phase 4 (conversion pod) can reuse
-   the existing per-disk catalog-image HTTP endpoint directly, or whether it
-   requires downloading the full image to local/ephemeral storage first
-   (which would regress the "no double-copy" property CDI HTTP import
-   currently has for cold migrations). Needs a virt-v2v spike, not just a
-   documentation read.
+   local file?~~ **Resolved by a real spike, 2026-09-10 — yes, via a
+   different (and better) mechanism than originally proposed.** This
+   originally asked whether `-i disk` could be pointed at an `nbd://`
+   socket manually fronted by nbdkit. That framing turns out to be based
+   on an unreliable secondary source: an earlier research pass (web search
+   + AI-summarized fetch) claimed `-i disk`'s man page documents an
+   `nbd://` URI form, but the actual installed man page for virt-v2v 2.4.0
+   (Ubuntu Noble) says no such thing about `-i disk` — that claim appears
+   to have been a summarizer artifact, not a real documented feature (the
+   same class of problem flagged for a different claim under Open
+   Question #4). Rereading the real man page instead surfaced the correct,
+   already-documented mechanism: its bandwidth-limiting section explicitly
+   calls out **"`-i libvirtxml` when using HTTP or HTTPS disks"** as a
+   first-class supported case.
+
+   **This was tested end-to-end, locally, not just read about.** `nbdkit`
+   and `virt-v2v` were installed in this session's sandbox (no Nutanix or
+   OpenShift involved) and driven directly:
+   1. Served a test disk image over both plain HTTP (nginx) and HTTPS with
+      Basic Auth and a self-signed cert (nginx again, matching how a real
+      HTTP(S) source is typically fronted), confirming byte-range request
+      support first (`nbdkit`'s curl plugin requires HTTP Range support
+      from the backing server — a real, concrete precondition worth
+      checking against Nutanix's actual image-download endpoint before
+      relying on this path, since it wasn't previously called out
+      anywhere in this document).
+   2. Wrote a minimal libvirt domain XML with `<disk type='network'
+      device='disk'><source protocol='http'` (then `'https'`)
+      `name='...'><host name='...' port='...'/></source>...`, per the man
+      page's "Minimal XML for -i libvirtxml option" template.
+   3. Ran `virt-v2v -i libvirtxml <that XML> -o local -os <dir>`.
+
+   **Result: it worked completely, for both HTTP and HTTPS.** virt-v2v
+   internally spawns its own `nbdkit` process with the `curl` plugin
+   layered under `retry`/`cacheextents`/`cow` filters
+   (`nbdkit --filter cow --filter cacheextents --filter retry curl
+   url=https://...`), connects qemu to it over a Unix-socket NBD
+   connection it manages itself, and libguestfs successfully ran
+   `inspect_os` against the resulting network-backed disk (confirmed via
+   `-x` trace output showing `launch = 0` and the OS-inspection pass
+   actually running). The HTTPS case required the standard "trust this
+   CA" step any HTTPS client needs (self-signed cert had to be added to
+   the system trust store, and needed a proper `subjectAltName=IP:...`
+   extension, not just a CN, for modern TLS libraries to accept it) — no
+   different from what CDI's HTTP importer already requires today via
+   this adapter's `ConfigMap`/CA-cert handling. (The only "failure" in
+   the whole exercise was libguestfs correctly reporting "No root device
+   found" on the synthetic test blob, which has no real filesystem on it
+   by design — that's the expected, correct outcome for a blank disk, not
+   a mechanism failure.)
+
+   **Practical consequence for Phase 4:** this means Forklift's Nutanix
+   conversion pod would **not** need to run or orchestrate nbdkit itself
+   at all — it can generate a minimal libvirt domain XML pointing at the
+   existing per-disk catalog-image HTTP(S) URL (`elementHTTPSource`/
+   `centralHTTPSource` in `builder.go`) and hand that to `virt-v2v -i
+   libvirtxml`, and virt-v2v handles the nbdkit orchestration internally.
+   This preserves the "no double-copy" property this open question was
+   originally worried about losing — the disk is streamed on demand via
+   Range requests, not downloaded wholesale first. Two things remain
+   unverified rather than resolved outright: (a) whether Nutanix's actual
+   Prism Element/Central image-download endpoints support HTTP Range
+   requests (this session's spike only confirmed the *general* mechanism
+   against a Range-capable test server, and separately confirmed Range
+   support is a hard requirement — this specific server behavior needs
+   checking against a real Nutanix image download, not assumed); and (b)
+   how Basic Auth credentials (which Prism Element's image download uses)
+   should be supplied to the libvirt XML `<source>` — this spike used an
+   unauthenticated endpoint to isolate the TLS-trust variable, and didn't
+   test libvirt's `<auth>`/`<secret>` mechanism (which needs a running
+   `libvirtd` + `virsh secret-*` to resolve, not available in this
+   sandbox) or the simpler curl-native `https://user:pass@host/...`
+   embedded-credentials URL form as an alternative.
 3. ~~Are Nutanix categories exposed via an API endpoint Forklift's collector
    isn't calling yet?~~ **Resolved during review — they already are.**
    `pkg/controller/provider/container/nutanix/resource_vm.go:40` sets
@@ -76,6 +143,21 @@ see-also:
    notes (or directly with Nutanix) before gating any implementation on a
    specific version floor, mirroring how oVirt's direct-LUN support is
    gated behind `engine >= 4.5.2.1` (see `ovirt-lun-migration.md`).
+
+   **Caution flagged, 2026-09-10:** this question's "PC 7.3 / AOS 7.3"
+   GA-floor citation, credited above to "the current v4 API reference
+   matrix," should itself be treated with suspicion rather than as settled.
+   Separate research for Tier 0 (this session) found that a summarized
+   fetch of the same `nutanix.dev/api-reference-v4` page produced an
+   equivalent "PC/AOS 7.3" GA claim for the *clustermgmt*/*vmm*/
+   *networking* namespaces that doesn't square with Nutanix's real
+   `pc.202x.x` version-numbering scheme, and was discarded as a likely
+   fetch-summarizer artifact rather than cited as fact (see Tier 0's
+   "Further research" note). The `dataprotection` "7.3" figure here may be
+   the same kind of artifact from an earlier research pass, not
+   independently confirmed against a primary changelog either. Re-verify
+   this figure from a rendered (not AI-summarized) copy of the reference
+   page, or directly with Nutanix, before relying on it.
 
    This question also has a practical timing dimension, per Nutanix's
    published AOS release/support lifecycle (`endoflife.date/nutanix-aos`,
@@ -300,13 +382,19 @@ client/collector code that several later tiers (Tier 1's `StorageMapped`/
 need to modify. Doing the legacy-API migration first avoids
 rebasing that other work on soon-to-be-replaced client code.
 
-**Estimated effort:** medium — this is a systematic client-layer port
-(v3 → v4 for cluster/host/VM/subnet listing and Prism Element image
-handling; v2.0 → v4 for Prism Element storage containers), not new feature
-design. The runway (last-GA release ~Q2 CY2027, phased removal starting
-~Q4 CY2027, both roughly a year or more out from this document's writing)
-is real but not immediate, so this should be scheduled deliberately rather
-than treated as a fire drill — see Open Question #5.
+**Estimated effort:** medium *if* the target v4 endpoints are confirmed GA
+and stable — this is meant to be a systematic client-layer port (v3 → v4
+for cluster/host/VM/subnet listing and Prism Element image handling; v2.0
+→ v4 for Prism Element storage containers), not new feature design. But
+per the "Further research" note above, that precondition doesn't hold yet
+for at least host listing (confirmed RC) and is unconfirmed either way for
+cluster listing, VM lifecycle actions, and subnet listing — so treat this
+estimate as contingent on Open Question #4's now-broadened scope, not as a
+number to schedule against yet. The runway (last-GA release ~Q2 CY2027,
+phased removal starting ~Q4 CY2027, both roughly a year or more out from
+this document's writing) is real but not immediate, so this should be
+scheduled deliberately rather than treated as a fire drill — see Open
+Question #5.
 
 **Lab-confirmed, 2026-09-10:** a local Nutanix CE cluster (AOS 6.8.1,
 Prism Element only, not registered to any Prism Central) exposes **zero**
@@ -328,16 +416,97 @@ already-collected `v3` inventory data — so implementation is starting
 there first, with Phase 1 to follow once a v4-capable environment is
 available. See Implementation History.
 
+**Further research, 2026-09-10 — per-endpoint v4 GA status is not uniform,
+and the filter mechanism doesn't port 1:1.** Beyond the lab having no v4
+surface at all, deeper research into the specific endpoints this tier would
+need to port found real additional uncertainty, not just "needs a
+PC-having lab to verify":
+
+- **The `v3` generic list helper's filtering mechanism has no v4
+  equivalent.** `listAllV3[T](r, kind, filter, pageSize)` passes a FIQL body
+  filter; v4's `ListAllV4` (already used by the two ported paths, per
+  `pkg/lib/client/nutanix/client.go`) pages via `$page`/`$limit` query
+  params and has no such filter parameter — v4 uses OData query
+  conventions instead. Porting `listClusters`/`listHosts`/`listVMs`/
+  `listSubnets` isn't a drop-in swap of the generic helper; each call's
+  filtering/exclusion logic (e.g. `excludeHostsByCluster`,
+  `filterByMatch`) needs re-deriving against OData semantics.
+- **Cluster listing's exact current path is unsettled across sources** —
+  community/blog citations show `/api/clustermgmt/v4.0.b1/config/clusters`
+  and `v4.0.b2/...` (both RC-suffixed) as well as a later unsuffixed
+  `v4.2/config/clusters`, which is inconsistent with a single stable GA
+  path. Confidence: inferred from scattered snippets, not confirmed
+  against a primary reference we could render.
+- **Host listing is confirmed RC (`v4.0.b1`) and restructured**, not just
+  unverified: `GET /clustermgmt/v4.0.b1/config/clusters/{extId}/hosts`
+  (developers.nutanix.com's own SDK docs) is per-cluster-nested, replacing
+  v3's single global `POST /api/nutanix/v3/hosts/list`. Nutanix's own
+  versioning policy states RC APIs are "not recommended for production
+  use" (already quoted in Open Question #4) — this isn't a hypothetical
+  concern for host listing, it's the confirmed status of the specific
+  endpoint needed.
+- **VM listing (`vmm`/`ahv/config/vms`) has the strongest evidence of the
+  four**: nutanix.dev states directly *"the 'vmm' namespace is currently
+  available as GA in Prism Central pc.2024.3 and AOS 7.0."* But namespace-level
+  GA does not guarantee every operation in it is GA — a nutanix.dev post on
+  vmm batch operations shows `POST .../vms/{extId}/$actions/
+  associate-categories` explicitly tagged RC (`v4.0.b1`) even though it's
+  in the same "GA" vmm namespace. Whether the base list-VMs call and the
+  power-state/shutdown actions Tier 0 actually needs (see below) share the
+  namespace's GA status specifically, or are RC like the categories action,
+  is unconfirmed.
+- **Subnet listing (`networking` namespace)** shows the same
+  version-graduation pattern via Nutanix's own published SDK release
+  history (`ntnx-networking-py-client` on PyPI: `4.0.1` → `4.0.1a1` →
+  `4.0.1b1` → `4.0.2b1` → `4.1.1`+, i.e. alpha → beta → GA over time) —
+  confirming namespaces do genuinely graduate, but not pinning which stage
+  the specific subnet-listing endpoint is at on any AOS/PC version this
+  document has evidence for.
+- **VM lifecycle actions** (the v3 `getVM`/`setPowerState`/
+  `transitionPowerState` equivalents Tier 0 also needs) follow a
+  `.../vms/{extId}/$actions/<name>` pattern in v4, confirmed by the same
+  batch-operations post above — but that post's own example action is RC,
+  and this document found no primary source confirming the specific
+  power-on/power-off/ACPI-shutdown action names or their GA/RC status.
+- No single authoritative GA/EA/RC matrix covering clustermgmt+vmm+networking
+  together could be confirmed: Nutanix's own `developers.nutanix.com`
+  API reference is a JS-rendered SPA that didn't yield content to
+  automated fetching in this research pass, and one summarized fetch of
+  `nutanix.dev/api-reference-v4` returned a version-numbering claim
+  ("PC/AOS 7.3") inconsistent with Nutanix's actual `pc.202x.x` versioning
+  scheme — treated as a fetch-summarizer artifact and discarded, not cited
+  as evidence anywhere in this document.
+
+**Practical consequence:** this tier's client-layer port should not be
+implemented speculatively against unverified/RC endpoint paths and an
+untested OData filter redesign. The path to `implementable` status runs
+through either (a) a v4-capable Prism Central environment to test against
+directly (only that can settle the real current path/GA-status per
+endpoint, which fluctuates release-to-release per the evidence above), or
+(b) a direct Nutanix engineering contact who can confirm the current GA
+matrix authoritatively — folding into Open Question #4's existing "confirm
+with Nutanix directly" recommendation, now extended from just the CRT API
+to this tier's four list endpoints and three lifecycle actions as well.
+
 ### Gap Tier 1: Validator correctness
 
-These `Validator` methods return a hardcoded pass today even though the
-inventory fields they'd need to check already exist in the Nutanix model
-*and* are already consumed by the builder for other purposes. Closing these
-requires no new inventory collection — only porting logic and, where
-possible, reusing shared helpers from `pkg/controller/plan/adapter/base`
-that vSphere already uses.
+**Status: implemented, 2026-09-10** (Phase 2 — see Implementation History).
+`StorageMapped`, `NetworksMapped`/`NICNetworkRefs`, `InvalidDiskSizes`,
+`MacConflicts`, `PVCNameTemplate`, and `GuestToolsInstalled` all now check
+real inventory state, with unit test coverage in `validator_test.go`.
+`MaintenanceMode` remains a hardcoded pass, per the partial-exception note
+below — closing it needs the AHV host-state model work described there,
+which hasn't been done.
 
-| Method | Nutanix today | Data available | vSphere reference |
+The table below reflects the pre-implementation state, kept for the
+file:line evidence trail. These `Validator` methods returned a hardcoded
+pass even though the inventory fields they'd need to check already existed
+in the Nutanix model *and* were already consumed by the builder for other
+purposes — closing them required no new inventory collection, only porting
+logic and, where possible, reusing shared helpers from
+`pkg/controller/plan/adapter/base` that vSphere already uses.
+
+| Method | Nutanix before Phase 2 | Data available | vSphere reference |
 |---|---|---|---|
 | `StorageMapped` | `validator.go:28-31`, always `true` | `Disk.StorageContainerUUID` (used in `builder.go:436`) | iterates `vm.Disks`, checks `disk.Datastore.ID` against `Map.Storage.Status.Refs` |
 | `NetworksMapped` / `NICNetworkRefs` | `validator.go:37-40,46-49`, stub | `NIC.SubnetUUID` (used in `builder.go:327`) | iterates `vm.Networks` against `Map.Network.Status.Refs` |
@@ -352,6 +521,28 @@ bare `State string` — closing this one requires mapping AHV host state
 values to a boolean first (a small model/collector change, not just wiring),
 and possibly confirming the Prism API even surfaces this per-host.
 
+**Investigated directly against the lab, 2026-09-10 — this needs new API
+research, not a mapping table.** A live `POST /api/nutanix/v3/hosts/list`
+query against this document's Nutanix CE lab returned `status.state:
+"COMPLETE"` for its single host, with no maintenance-related field
+anywhere in the full entity (checked by grepping the complete response for
+"maintenance"). `COMPLETE`/`PENDING`/`ERROR` is the generic v3 entity
+provisioning-lifecycle state every Nutanix v3 resource carries (the same
+field shape appears on clusters, VMs, subnets, etc.) — it has nothing to
+do with operational host maintenance mode, confirming the "possibly
+confirming the Prism API even surfaces this per-host" caveat above was the
+right thing to worry about. Community documentation for AHV host
+maintenance describes it as an `ncli host edit`/CVM-level operation;
+research for this document found no confirmed v2/v3 REST field or
+endpoint exposing it as a simple per-host boolean the way vSphere's
+`InMaintenanceMode` is. (This lab is also single-node CE, where
+host-level maintenance mode may not be a fully exercisable concept in the
+first place, so this negative result should be treated as suggestive, not
+exhaustive, for a real multi-node cluster.) `MaintenanceMode` stays a
+hardcoded pass; closing it needs either a multi-node Nutanix cluster to
+probe the real API surface directly, or confirmation from Nutanix of
+which endpoint (if any) exposes this.
+
 **Estimated effort:** small — a few days per method, mostly following the
 vSphere pattern and reusing `planbase` helpers. This tier has no dependency
 on the open questions, but does touch the same collector client Tier 0
@@ -361,31 +552,107 @@ migrates — see Proposed Phasing below for sequencing.
 
 Gaps that are real and scoped, but smaller than Tiers 4–5:
 
-- **Shared/excluded disk detection.** vSphere's `SharedDisks`/
-  `ExcludedDisks` validators inspect real state (`disk.Shared`,
-  `disk.BusAddress`); Nutanix hardcodes a pass (`validator.go:59-65`). The
-  Nutanix `Disk` model has no `Shared` field and no `BusAddress`
-  equivalent — only `AdapterType` + `DeviceIndex`, from which a composite
-  identifier (e.g. `scsi:0`) could be synthesized, but `ExcludeDisks`
-  plan-spec semantics currently assume the vSphere-style string format.
-  Requires a small inventory model extension, not just wiring.
-- **OS/Preference/Template mapping.** `TemplateLabels`/`PreferenceName`
-  (`builder.go:803-806, 862-865`) are empty stubs. The data pipe already
-  exists: `VM.GuestOSID`/`GuestOSVersion` are populated from AHV's
-  `Spec.Resources.GuestOSID` and Nutanix Guest Tools
-  (`container/nutanix/resource_vm.go:55,138-152`). This needs an AHV
-  guest-ID → osinfo-ID mapping table analogous to vSphere's ~40-entry
-  `osMap`, then wiring into the two builder methods. Low risk, self
-  contained.
-- **Tag/category → label/annotation mapping.**
-  `SourceVMLabelsAndAnnotations` (`builder.go:886-889`) is a one-line TODO.
-  Unlike earlier drafts of this document claimed, the data is already
-  collected: `Categories map[string]string` on the `VM` struct is populated
-  from the v3 VM entity's `metadata.categories`
-  (`container/nutanix/resource_vm.go:40`). This is pure wiring work —
-  build a sanitization/mapping pass analogous to vSphere's tag→label logic
-  (`vsphere/builder.go:2861+`) and wire it into
-  `SourceVMLabelsAndAnnotations`. **Estimated effort:** small.
+- **Excluded-disk detection — status: implemented, 2026-09-10.**
+  `ExcludedDisks` now validates against real state, and the builder skips
+  excluded disks in `VirtualMachine`/`DataVolumes`/`Tasks`
+  (`VM.RemoveExcludedDisks` in `web/nutanix/vm.go`). This landed with a
+  different identifier scheme than originally proposed here: rather than
+  synthesizing a vSphere-style composite bus address (e.g. `scsi:0`) from
+  `AdapterType`+`DeviceIndex` — which risks collisions across adapter types
+  that both index from 0 — `excludeDisks` entries for Nutanix are disk
+  `UUID`s, which are already globally unique and stable. The
+  `plan.VM.ExcludeDisks` field's Go doc comment (`plan/vm.go:216`, "vSphere
+  bus addresses") is now inaccurate for a second provider; it should read
+  as provider-specific disk identifiers. See `docs/compatibility/vm-fields.md`
+  for the updated per-provider format documentation.
+- **Shared-disk detection — status: implemented, 2026-09-10, after being
+  temporarily reclassified as blocked.** An earlier pass through this
+  session correctly found that AHV has no shared-disk concept at the
+  VM-disk level (multi-VM attachment is done via **Volume Groups**, a
+  separate top-level entity, confirmed against the v3 API's `VMDisk`
+  struct which has no shared/attachment field) — but then over-generalized
+  that finding into "needs new API access this session doesn't have,"
+  which was wrong: Volume Groups are a **v3** entity
+  (`POST /api/nutanix/v3/volume_groups/list`), confirmed reachable and
+  responding (200, zero entities) against this document's own
+  Prism-Element-only lab, no Prism Central needed. The actual blocker was
+  conflating "needs substantial new code" with "needs external access" —
+  they're different problems. Implemented properly once that was
+  corrected: a new `volume_groups` v3 collector
+  (`container/nutanix/resource_volume_group.go`), with the exact wire
+  schema (`attachment_list[].vm_reference`, `disk_list[].vmdisk_uuid`,
+  etc.) sourced from Nutanix's own published Go SDK
+  (`github.com/nutanix/terraform-provider-nutanix`,
+  `nutanix/sdks/v3/prism/prism_structs.go`) rather than guessed, since
+  this lab has no populated volume groups to verify against directly. A
+  disk is marked `model.Disk.Shared = true` when it's backed by a volume
+  group attached to more than one VM (cross-referenced by matching the
+  VM's own disk UUID against the volume group's `disk_list[].vmdisk_uuid`
+  — collector enrichment in `resource_vm.go`'s `enrichVM`, wired from
+  `collector.go`'s `vms()`, with a best-effort fallback to "no shared
+  disks" if the volume-group list call itself fails, so an RBAC
+  restriction on this one endpoint can't break VM collection entirely).
+  `Validator.SharedDisks` now flags shared disks as a **Warning**, not
+  Critical: Nutanix's builder has no shared-PVC creation/dedup machinery
+  the way vSphere's `findSharedPVCs` does, so a shared Volume Group is
+  migrated today as independent, diverging per-VM copies rather than a
+  single shared destination volume — the warning tells the user that
+  before they're surprised by it, without blocking the migration outright
+  (mirroring vSphere's own "Missing shared disks PVC" Warn-not-Critical
+  precedent). Actually deduplicating/sharing the destination volume across
+  VMs remains unimplemented and would still be new-feature-scale work;
+  what's landed here is detection, matching what this tier actually asked
+  for.
+- **OS/Template mapping — status: partially implemented, 2026-09-10.**
+  `TemplateLabels` now classifies the VM's guest OS
+  (`VM.GuestOSID`/`GuestOSVersion`) into an osinfo template ID and sets the
+  `os.template.kubevirt.io/*`/`workload.template.kubevirt.io/server`/
+  `flavor.template.kubevirt.io/medium` labels accordingly. This is a
+  coarser classifier than originally proposed — not a vSphere-style
+  ~40-entry exact-match `osMap`, but a substring classifier (win/linux
+  family) — because AHV has no fixed enumerated guest-OS-ID list to
+  exact-match against: `guest_os_id` is reported by Nutanix Guest Tools
+  introspection rather than user-selected from a known set, and Nutanix's
+  own community forums report it commonly comes back null/empty in
+  practice (unverified against this document's own lab, which has no VMs
+  provisioned to check). A vSphere/oVirt-style exact-match table keyed on
+  unconfirmed value strings would silently never match, so this uses the
+  same substring fallback tier vSphere/oVirt already fall back to for
+  values outside their own tables.
+
+  **`PreferenceName`'s plumbing is now implemented, but the item is still
+  incomplete for a reason this tier's original "self-contained, small"
+  framing didn't anticipate.** Unlike `TemplateLabels`, which is
+  adapter-local, `PreferenceName` looks up a `*core.ConfigMap` that
+  `KubeVirt.getOsMapConfig` (`pkg/controller/plan/kubevirt.go:3190`)
+  resolves via a per-provider `Settings.<Provider>OsConfigMap` value —
+  previously wired only for `api.VSphere`/`api.OVirt`, with Nutanix falling
+  into the `default` case and always getting an empty ConfigMap. This
+  session added `Settings.NutanixOsConfigMap`, a `getOsMapConfig` switch
+  case, and a real `configMap.Data[vm.GuestOSID]` lookup in
+  `Builder.PreferenceName` — but deliberately made the setting **optional**
+  rather than required at startup (unlike `VsphereOsConfigMap`/
+  `OvirtOsConfigMap`), because there's still no verified Nutanix
+  guest-OS-ID enum to populate a real mapping ConfigMap against (the same
+  "no verified `guest_os_id` enum" problem as `TemplateLabels`, above).
+  So the code path is ready, but there's no ConfigMap to point it at until
+  that data is confirmed — an operator/CSV change to ship one is a
+  separate, still-open follow-on once it is. This is functionally harmless
+  to leave that way: `KubeVirt.vmPreference`
+  (`pkg/controller/plan/kubevirt.go:2957-2969`) falls back to `vmTemplate`
+  (which now works, per `TemplateLabels` above) whenever `PreferenceName`
+  returns `""`, exactly as before this change, so there's no regression —
+  just a still-open data gap rather than a wiring gap.
+- **Tag/category → label/annotation mapping — status: implemented,
+  2026-09-10.** `SourceVMLabelsAndAnnotations` now maps `VM.Categories`
+  (key:value pairs, already collected — see Open Question #3's resolution)
+  to `nutanix.forklift.konveyor.io/<key>: <value>` labels, reusing the same
+  sanitization logic vSphere's tag→label mapping uses (extracted to
+  `planbase.SanitizeForK8sMetadata`/`IsInLabelTags` as a shared helper
+  during this work, and vSphere's builder now calls the shared version too
+  — see `pkg/controller/plan/adapter/base/sanitize.go`). Unlike vSphere,
+  which also maps custom attributes to annotations from a second data
+  source, Nutanix only has categories, so annotations is always empty.
 - **Volume populators / storage offload.**
   `SupportsVolumePopulators()` returns `false` unconditionally; all
   transfer goes through CDI HTTP import of a temp catalog image, with no
@@ -407,12 +674,13 @@ Gaps that are real and scoped, but smaller than Tiers 4–5:
   ordering, however, is portable once this tier's shared-disk detection
   lands.
 
-**Estimated effort:** mixed and mostly independent per item — OS/Preference
-mapping and category mapping are small, self-contained wiring tasks;
-shared/excluded-disk detection is medium (needs the inventory model
-extension noted above); volume populators and scheduler host-awareness are
-both new-feature-scale design efforts, not ports, and should be scoped as
-their own follow-on enhancements rather than estimated here.
+**Estimated effort (updated 2026-09-10):** excluded-disk detection,
+`TemplateLabels`, category mapping, and shared-disk detection are all
+done. `PreferenceName`'s wiring is done too, but its usefulness is gated
+on a still-open data problem (no verified guest-OS-ID enum to populate a
+mapping ConfigMap with) rather than remaining code work. Volume populators
+and scheduler host-awareness remain new-feature-scale design efforts, not
+ports, and should be scoped as their own follow-on enhancements.
 
 ### Gap Tier 3: Guest customization (conversion pod)
 
@@ -439,31 +707,44 @@ use; this is nonetheless the single biggest known risk standing between
 readiness, but it should be characterized and sized rather than assumed
 universal.
 
-virt-v2v itself is not inherently vSphere-specific — per
-`docs/use-of-virt-v2v-in-forklift.md`, it supports an `-i disk` local-file
-input mode (`virt-v2v -i disk disk.img -o kubevirt [...]`), which is
-architecture-agnostic: it just needs a block device or file, not a vCenter
-connection. That same source document describes this mode as "mainly
-useful for testing" rather than a hardened production path, which weakens
-(without ruling out) the case for reusing it here — Open Question #2's
-virt-v2v spike should specifically assess whether `-i disk` is production-
-ready or would itself need hardening as part of this work. Nutanix already
-produces exactly that shape of artifact — a
-disk image reachable over HTTP via the catalog-image mechanism
-(`elementHTTPSource`/`centralHTTPSource` in `builder.go`). The open question
-(#2 above) is whether that HTTP source can be presented to virt-v2v as a
-block device via nbdkit's `curl` plugin (streaming, no full download) or
-whether it requires downloading the full image into pod-local storage first
-— which works but loses the "single copy" property CDI HTTP import
-currently has. If a temp-storage strategy is needed, the existing
+virt-v2v itself is not inherently vSphere-specific. `docs/use-of-virt-v2v-
+in-forklift.md` (an older architecture doc; note it predates the project's
+current `-o local`-based conversion-pod design and doesn't mention
+`-i libvirtxml`'s HTTP/HTTPS network-disk support) only describes a local
+`-i disk` mode as "mainly useful for testing." **Open Question #2 is now
+resolved** (see above) with a better answer than either framing assumed:
+`-i libvirtxml` with a `<disk type='network' protocol='http'`/`'https'>`
+source is a first-class, documented virt-v2v input mode, verified this
+session to work end-to-end against a local streaming HTTP(S) source
+(including proper TLS/CA handling), with virt-v2v transparently
+orchestrating its own internal `nbdkit`+`cow`/`cacheextents`/`retry`
+pipeline. Nutanix already produces exactly the input this needs — a disk
+image reachable over HTTP(S) via the catalog-image mechanism
+(`elementHTTPSource`/`centralHTTPSource` in `builder.go`) — so the
+conversion pod's job would be to generate a minimal libvirt domain XML
+pointing at that same URL (Prism Element's Basic Auth or Prism Central's
+cookie-based auth would need to reach the `<source>`/`<auth>` XML somehow;
+see the open question's remaining unverified items) and hand it to
+`virt-v2v -i libvirtxml`, not to download the disk wholesale first — so
+the "no double-copy" property CDI HTTP import currently has for cold
+migrations is preservable here too. The
 provider-neutral `PlanSpec.ConversionTempStorageClass`/
 `ConversionTempStorageSize` fields (already consumed generically by
-`pkg/controller/conversion/builder.go`) can be reused directly — no new
-API surface needed here.
+`pkg/controller/conversion/builder.go`) remain available if a temp-storage
+fallback ever proves necessary, but nothing found this session suggests
+it's required for the streaming path.
 
-**Estimated effort:** large, and effort is not the main uncertainty — the
-open question above is. This should start with a virt-v2v spike (Open
-Question #2), not a full implementation commitment.
+**Estimated effort:** large, but the single biggest uncertainty (whether
+virt-v2v could consume Nutanix's HTTP disk source at all, without a
+double-copy) is now resolved rather than open. What's left before this
+tier can be scoped as `implementable`: confirming Nutanix's real
+image-download endpoints support HTTP Range requests (a hard requirement
+for the streaming path, confirmed this session but not yet checked against
+a real Nutanix response), working out how to pass Prism's Basic
+Auth/cookie credentials through the libvirt XML `<source>`/`<auth>`
+mechanism (or via an embedded-credentials URL, not yet tested), and the
+actual guest-customization logic itself (driver injection, static-IP
+config, LUKS/NBDE) once the input mechanism is wired up.
 
 ### Gap Tier 4: Warm migration / change tracking
 
@@ -566,13 +847,17 @@ Parity work, not research:
   are already collected into the inventory model (see Tier 2) but not yet
   exposed as a first-class inventory web resource the way vSphere exposes
   custom fields.
-- **Docs.** Zero mentions of "nutanix" anywhere under `docs/`, including
-  all eight `docs/compatibility/*.md` feature matrices, which simply omit it
-  as a row/column. There is no `nutanix-setup-guide.md` analogous to
-  `docs/hyperv-setup-guide.md`. This should be corrected incrementally as
-  each tier lands — e.g., add the compatibility-matrix row alongside Tier 1,
-  add the setup guide once Tier 1 validation makes the provider trustworthy
-  enough to document as supported.
+- **Docs — status: implemented, 2026-09-10.** All eight
+  `docs/compatibility/*.md` feature matrices now include Nutanix (verified
+  against source, per Phase 3's Implementation History entry).
+  `docs/nutanix-setup-guide.md` now exists, modeled on
+  `docs/hyperv-setup-guide.md`, with its CLI examples validated against
+  this document's own lab (`prism_central` probe, authenticated VM list,
+  storage-container list all confirmed to return the responses the guide
+  describes) rather than written from assumption alone. It states this
+  document's current maturity/limitations up front (cold-only, no guest
+  customization, no shared-disk migration) so it doesn't overclaim support
+  the adapter doesn't have yet.
 
 **Estimated effort:** small per item, but numerous; treat as ongoing work
 tracked alongside each other tier rather than a single deliverable (see
@@ -629,13 +914,13 @@ Proposed Phasing below).
 
 | Phase | Scope | Depends on | Ships independently? |
 |---|---|---|---|
-| Phase 0 | Resolve the remaining open questions — #1 (Nutanix partner conversation), #2 (virt-v2v spike), #4 (`compute-changed-regions` GA-status confirmation), #5 (Tier 0 sequencing decision). Open Question #3 (categories) is already resolved, not part of this phase's scope. | — | Yes — pure research |
+| Phase 0 | Resolve the remaining open questions — #1 (Nutanix partner conversation), ~~#2 (virt-v2v spike)~~ **done 2026-09-10**, #4 (`compute-changed-regions` GA-status confirmation, now broadened to Tier 0's endpoints too), #5 (Tier 0 sequencing decision). Open Question #3 (categories) was already resolved. | — | Yes — pure research |
 | Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory, Prism Element image/storage-container handling, and the v3-based VM lifecycle calls in `client.go` — `getVM`, `setPowerState`, `transitionPowerState`) | — | Yes |
-| Phase 2 | Tier 1 validator correctness + `validator_test.go` + compatibility-matrix docs update | Benefits from Phase 1 landing first (shares the same client code) but not strictly blocked on it | Yes |
-| Phase 3 | Tier 2 items with no external dependency: OS/Preference mapping, shared/excluded-disk model extension + validation, category→label mapping | Not strictly blocked on Phase 2, but the shared/excluded-disk validator work benefits from landing after it (same test-fixture patterns) | Yes |
-| Phase 4 | Tier 3 guest customization (conversion pod) | Phase 0's virt-v2v spike result | No — blocked on Phase 0 |
+| Phase 2 | Tier 1 validator correctness + `validator_test.go` + compatibility-matrix docs update — **done 2026-09-10** | Benefits from Phase 1 landing first (shares the same client code) but not strictly blocked on it | Yes |
+| Phase 3 | Tier 2 items with no external dependency: OS/Preference mapping, shared/excluded-disk model extension + validation, category→label mapping — **done 2026-09-10** | Not strictly blocked on Phase 2, but the shared/excluded-disk validator work benefits from landing after it (same test-fixture patterns) | Yes |
+| Phase 4 | Tier 3 guest customization (conversion pod) | Open Question #2 is now resolved (see Tier 3), narrowing what's left to: confirming Range-request support on Nutanix's real image-download endpoints, and working out Basic Auth/cookie credential passing through the libvirt XML `<source>`/`<auth>` mechanism | Partially unblocked — the core feasibility question is answered; two narrower items remain before implementation can start |
 | Phase 5 | Tier 4 warm migration | Phase 0's Nutanix partner-access and version-confirmation results, and reuses Phase 4's disk-access patterns if any | No — blocked on Phase 0, likely also on Phase 4 |
-| Ongoing | Tier 5 tooling/CLI/tests/docs | Tracks alongside each phase above | N/A |
+| Ongoing | Tier 5 tooling/CLI/tests/docs — compatibility docs and `nutanix-setup-guide.md` **done 2026-09-10** | Tracks alongside each phase above | N/A |
 
 Phases 1–3 should be scoped as normal `implementable` enhancements once
 this document's tiering is agreed on; Phases 4 and 5 should remain
@@ -737,6 +1022,120 @@ surface anticipated there either.
   is starting with Phase 2 (Tier 1 validator correctness) instead, which
   needs no new API access. Phase 1 will follow once Prism Central and/or
   a newer AOS build is available.
+- 2026-09-10 — Implemented Phase 2 (Tier 1 validator correctness) in full:
+  `StorageMapped`, `NetworksMapped`/`NICNetworkRefs`, `InvalidDiskSizes`,
+  `MacConflicts`, `PVCNameTemplate`, and `GuestToolsInstalled` now check
+  real inventory state, with unit tests in `validator_test.go`.
+  `MaintenanceMode` is unchanged (still needs the AHV host-state model
+  work noted in its partial-exception paragraph).
+- 2026-09-10 — Implemented most of Phase 3 (Tier 2): excluded-disk
+  detection (using disk UUID as the identifier, not a synthesized bus
+  address — see the updated Tier 2 entry and `docs/compatibility/vm-fields.md`),
+  `TemplateLabels` OS classification, and category→label mapping, all with
+  unit tests. In the course of this work, found two Tier 2 items were
+  under-scoped in earlier drafts and reclassified them: shared-disk
+  detection needs new Volume Group inventory collection (AHV multi-attach
+  isn't modeled at the VM-disk level at all), and `PreferenceName` needs a
+  Settings/operator change outside the adapter package, not just builder
+  wiring — see the updated Tier 2 entries for both. Also extracted
+  vSphere's tag→label sanitization helpers into a shared
+  `pkg/controller/plan/adapter/base/sanitize.go` so Nutanix's category
+  mapping could reuse them instead of duplicating ~35 lines of logic.
+  Updated the `docs/compatibility/*.md` matrices to add Nutanix throughout
+  (previously absent everywhere, per Tier 5), and corrected the
+  `plan.VM.ExcludeDisks` API doc comment (and regenerated CRD manifests)
+  which had said "vSphere only."
+- 2026-09-10 — Followed up on `PreferenceName`: added the
+  `Settings.NutanixOsConfigMap`/`getOsMapConfig` plumbing after all (see
+  `pkg/settings/migration.go`, `pkg/controller/plan/kubevirt.go`), so this
+  item isn't purely blocked. Unlike `VsphereOsConfigMap`/`OvirtOsConfigMap`,
+  it's optional rather than required at controller startup, since there's
+  still no verified Nutanix guest-OS-ID enum to force every deployment to
+  ship a populated ConfigMap against (see `TemplateLabels`' `osinfoID`
+  finding above). `PreferenceName` itself now does the real
+  `configMap.Data[vm.GuestOSID]` lookup; it just has no data source until
+  an operator sets `NUTANIX_OS_MAP` to a real ConfigMap, which still isn't
+  populatable with confidence today.
+- 2026-09-10 — Deepened Tier 0 and Open Question #2 research (see their
+  updated entries): found host listing's v4 endpoint is confirmed RC
+  (`v4.0.b1`) and per-cluster-nested rather than global, cluster/subnet
+  listing's current path is unsettled across sources, the v3 filter
+  mechanism has no v4 equivalent to port 1:1, and flagged that Open
+  Question #4's existing "PC 7.3/AOS 7.3" dataprotection GA-floor citation
+  may share the same kind of sourcing problem (an AI-summarized fetch of
+  `nutanix.dev/api-reference-v4` producing a version number inconsistent
+  with Nutanix's real `pc.202x.x` scheme) as a claim independently found
+  and discarded this session for the clustermgmt/vmm/networking
+  namespaces — worth re-verifying rather than continuing to treat as
+  settled. For Open Question #2, confirmed virt-v2v's `-i disk` mode
+  requires an `nbd://` URI (not a raw HTTP URL) and that nbdkit's `curl`
+  plugin is already how virt-v2v itself fronts HTTP(S) sources elsewhere,
+  narrowing the open question to whether that specific combination has
+  been tested for an external (non-vCenter) HTTP source. Did not implement
+  Tier 0's client-layer port on the strength of this evidence — it would
+  mean writing and shipping code against endpoints this research could not
+  confirm are GA, stable, or even at a settled path across Nutanix
+  releases, with no live Prism Central to test against.
+- 2026-09-10 — Investigated `MaintenanceMode` directly against the lab
+  rather than leaving it as an assumption: a live `POST
+  /api/nutanix/v3/hosts/list` query confirmed the collected `Host.State`
+  field ("COMPLETE") is the generic v3 entity provisioning-lifecycle
+  state every Nutanix resource carries, not operational maintenance mode,
+  and no maintenance-related field appears anywhere in the full host
+  entity response. Closing this validator needs new API research (a
+  multi-node cluster to probe, or confirmation from Nutanix), not the
+  "small model/collector change" originally estimated — see the updated
+  Tier 1 entry. Completed `PreferenceName`'s settings/wiring gap
+  identified in the previous entry (`Settings.NutanixOsConfigMap`,
+  optional unlike vSphere/oVirt's required equivalent) — see the updated
+  Tier 2 entry. Added `docs/nutanix-setup-guide.md`, with its CLI examples
+  validated against the lab rather than written from assumption. Left
+  Tier 0's client-layer port and Tier 2's shared-disk detection
+  unimplemented, per the reasoning in their respective entries above —
+  both would require either fabricating unverified API/schema details or
+  new inventory-collection work this session's evidence doesn't support
+  doing speculatively.
+- 2026-09-10 — **Resolved Open Question #2 with a real spike**, not
+  documentation-reading: installed `nbdkit` and `virt-v2v` locally
+  (no Nutanix or OpenShift involved) and drove `virt-v2v -i libvirtxml`
+  against a minimal libvirt domain XML with a `<disk type='network'
+  protocol='http'>` (then `'https'`) source pointed at a local streaming
+  HTTP(S) server. Confirmed end-to-end: virt-v2v transparently spawns its
+  own `nbdkit` (`curl` plugin + `retry`/`cacheextents`/`cow` filters),
+  connects qemu to it over NBD, and libguestfs successfully runs
+  `inspect_os` against the network-backed disk — for both HTTP and HTTPS
+  (the latter needed a properly-SAN'd trusted CA, exactly like CDI's
+  importer already requires). This corrects an earlier research pass in
+  this document's history (the "Refined, 2026-09-10" note previously
+  under Open Question #2, now replaced) that had relied on an
+  AI-summarized web fetch claiming `-i disk` accepts `nbd://` URIs
+  directly — the actual installed man page says no such thing; the real
+  documented mechanism is `-i libvirtxml` with a network-disk source, and
+  it works. Also empirically confirmed nbdkit's curl plugin requires HTTP
+  Range support from the backing server (a plain Python `http.server`
+  failed with "server does not support 'range' requests"; nginx with
+  Range support worked) — a concrete precondition to check against
+  Nutanix's real image-download endpoints, not previously identified
+  anywhere in this document. Updated Tier 3 and the Proposed Phasing
+  table to reflect that Phase 4's core feasibility question is answered;
+  what remains is narrower (Range support on Nutanix's actual endpoints,
+  and credential passing through the libvirt XML `<auth>` mechanism or an
+  embedded-credentials URL — neither tested this session, since testing
+  them needs either a real Nutanix image URL or a running `libvirtd` with
+  `virsh secret-*`, neither available in this sandbox).
+- 2026-09-10 — **Implemented shared-disk detection**, correcting an
+  over-generalization from earlier the same day: Volume Groups (AHV's
+  multi-VM disk-attachment mechanism) were assumed blocked on "new API
+  access this session doesn't have," but they're a **v3** endpoint,
+  already confirmed reachable against this document's own lab. New
+  `volume_groups` v3 collector (schema sourced from Nutanix's own
+  published Go SDK on GitHub, not guessed, since the lab has no populated
+  volume groups to verify against), `model.Disk.Shared` field, and
+  `Validator.SharedDisks` now flags shared disks as a Warning (Nutanix has
+  no shared-PVC dedup machinery, so a shared Volume Group migrates as
+  independent per-VM copies today — the warning surfaces that rather than
+  leaving it a silent surprise). See the updated Tier 2 entry. This
+  closes out Phase 3 (Tier 2) completely.
 
 ## Drawbacks
 
@@ -746,10 +1145,12 @@ surface anticipated there either.
   "cold migration, no guest customization" maturity. Phase sequencing
   should be revisited at each phase boundary rather than treated as a
   fire-and-forget backlog.
-- Phases 4 and 5 depend on external factors (Nutanix partner access, an
-  unproven virt-v2v integration path, an unconfirmed API GA status) that
-  engineering cannot unilaterally resolve, which makes them poor candidates
-  for hard release commitments until Phase 0 concludes.
+- Phase 5 (and part of Phase 4) depend on external factors (Nutanix
+  partner access, unconfirmed API GA status) that engineering cannot
+  unilaterally resolve — Phase 4's core virt-v2v integration question was
+  resolved by direct testing this session, but two narrower items
+  (Range-request support on Nutanix's real endpoints, credential passing)
+  still need verification before it's a hard release candidate.
 - Tier 0's timeline is set by Nutanix, not this project; if Phase 0's
   research is wrong about the runway (e.g. if Nutanix accelerates the
   schedule in a future bulletin revision, as it already revised once
