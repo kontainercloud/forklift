@@ -7,7 +7,7 @@ reviewers:
 approvers:
   - TBD
 creation-date: 2026-09-02
-last-updated: 2026-09-02
+last-updated: 2026-09-10
 status: provisional
 see-also:
   - "/enhancements/ovirt-lun-migration.md"
@@ -271,9 +271,10 @@ proposed new work. Confirmed via grep of the current tree:
   prism_central"`.
 - `pkg/controller/plan/adapter/nutanix/builder.go` — the Prism Element
   cold-migration disk-download path builds URLs against the legacy `v3`
-  image-file endpoint (`/api/nutanix/v3/images/%s/file`), and
-  `clusterExternalIP` (used to rewrite Prism Central download redirects to
-  the cluster VIP) calls `ListV3[Cluster]`.
+  image-file endpoint (`/api/nutanix/v3/images/%s/file`).
+  `pkg/controller/plan/adapter/nutanix/image_v4.go` — `clusterExternalIP`
+  (used to rewrite Prism Central download redirects to the cluster VIP)
+  calls `libclient.ListV3[libclient.Cluster]`.
 - `pkg/controller/plan/adapter/nutanix/client.go:212-252` — VM lifecycle
   operations during migration are also on `v3`: `getVM` (`GET
   /api/nutanix/v3/vms/{uuid}`), `setPowerState` (`PUT` of the full VM spec
@@ -699,6 +700,16 @@ surface anticipated there either.
   earlier renumbering passes, an unsubstantiated phase-dependency claim,
   and added hedging to CRT API mechanical details and the virt-v2v `-i
   disk` production-readiness caveat where confidence had outrun evidence.
+- 2026-09-10 — Verification pass against current upstream `main`
+  (`26b55d051`, 2026-09-09): confirmed this branch is based on exactly
+  that commit for every cited file, so no citations had drifted. Spot-
+  checked every Tier 0/Tier 1 file:line citation, all 20 `Validator`
+  methods, the `model.go` field list, and the `planbase` helper names
+  directly against source; all confirmed accurate except one — corrected
+  `clusterExternalIP`'s location from `builder.go` to `image_v4.go` (Tier
+  0's bullet list). Beginning Phase 1 (Tier 0 legacy API migration)
+  implementation next, validated against a local Nutanix CE lab (Prism
+  Element, cold migration).
 
 ## Drawbacks
 
