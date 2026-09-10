@@ -5,6 +5,7 @@ import (
 	"time"
 
 	nutanixweb "github.com/kubev2v/forklift/pkg/lib/client/nutanix"
+	liberr "github.com/kubev2v/forklift/pkg/lib/error"
 	libweb "github.com/kubev2v/forklift/pkg/lib/inventory/web"
 	"github.com/kubev2v/forklift/pkg/lib/logging"
 	core "k8s.io/api/core/v1"
@@ -32,6 +33,8 @@ const (
 	// ListAllV4 pages through as many requests as needed regardless of
 	// these values; the v4 image endpoint additionally caps $limit at 100.
 	storageContainerV4PageSize = 100
+	subnetV4PageSize           = 100
+	clusterV4PageSize          = 100
 	imageV4PageSize            = 100
 )
 
@@ -132,9 +135,25 @@ func listAllV4[T any](r *Client, path string, pageSize int) ([]T, error) {
 
 // List all clusters, scoped to the configured clusterUuid (if any).
 // Prism Central's own self-registered pseudo-cluster entry is excluded --
-// see isPrismCentralCluster.
+// see isPrismCentralCluster. Prism Element has no v4 surface (see Tier 0
+// in the design doc), so it stays on v3; Prism Central uses the v4
+// clustermgmt endpoint.
 func (r *Client) listClusters() (entities []clusterEntity, err error) {
-	entities, err = listAllV3[clusterEntity](r, "cluster", "", clusterPageSize)
+	switch r.prism.Mode {
+	case PrismElement:
+		entities, err = listAllV3[clusterEntity](r, "cluster", "", clusterPageSize)
+	case PrismCentral:
+		var raw []clusterV4Raw
+		raw, err = listAllV4[clusterV4Raw](r, clustersV4Path, clusterV4PageSize)
+		if err == nil {
+			entities = make([]clusterEntity, 0, len(raw))
+			for _, rawEntity := range raw {
+				entities = append(entities, rawEntity.toEntity())
+			}
+		}
+	default:
+		return nil, liberr.New("unknown Prism mode", "mode", r.prism.Mode)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -182,8 +201,25 @@ func (r *Client) listVolumeGroups() ([]volumeGroupEntity, error) {
 }
 
 // List all subnets (networks), scoped to the configured clusterUuid (if any).
+// Prism Element has no v4 surface (confirmed by direct probe against a
+// Prism-Element-only lab -- see Tier 0 in the design doc), so it stays on
+// v3; Prism Central uses the v4 networking endpoint.
 func (r *Client) listSubnets() (entities []networkEntity, err error) {
-	entities, err = listAllV3[networkEntity](r, "subnet", "", subnetPageSize)
+	switch r.prism.Mode {
+	case PrismElement:
+		entities, err = listAllV3[networkEntity](r, "subnet", "", subnetPageSize)
+	case PrismCentral:
+		var raw []subnetV4Raw
+		raw, err = listAllV4[subnetV4Raw](r, subnetsV4Path, subnetV4PageSize)
+		if err == nil {
+			entities = make([]networkEntity, 0, len(raw))
+			for _, rawEntity := range raw {
+				entities = append(entities, rawEntity.toEntity())
+			}
+		}
+	default:
+		return nil, liberr.New("unknown Prism mode", "mode", r.prism.Mode)
+	}
 	if err != nil {
 		return nil, err
 	}

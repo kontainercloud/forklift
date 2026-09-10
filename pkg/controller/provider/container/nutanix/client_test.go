@@ -455,6 +455,147 @@ func TestClientListStorageContainersCentral(t *testing.T) {
 // Prism Central's vmm v4 content/images collection -- rather than the v3
 // "image" kind used on Prism Element -- when the provider is configured
 // for Prism Central.
+// TestClientListSubnetsCentral verifies that listSubnets() dispatches to
+// Prism Central's v4 networking endpoint (rather than the v3 "subnet"
+// kind used on Prism Element) when the provider is configured for Prism
+// Central, and that the v4 response is correctly reshaped into the same
+// networkEntity shape ApplyTo already knows how to consume.
+func TestClientListSubnetsCentral(t *testing.T) {
+	data, err := os.ReadFile("testdata/subnets_v4_list.json")
+	if err != nil {
+		t.Fatalf("Failed to read testdata: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/nutanix/v3/clusters/list":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"entities":[]}`))
+		case "/api/networking/v4.4/config/subnets":
+			if r.Method != "GET" {
+				t.Errorf("Expected GET, got %s", r.Method)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := createTestClientWithSettings(server.URL, map[string]string{
+		api.NutanixPrismType: api.NutanixPrismCentral,
+	})
+	client.url = server.URL
+	mustConnect(t, client)
+
+	entities, err := client.listSubnets()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(entities) != 2 {
+		t.Fatalf("Expected 2 subnets, got %d", len(entities))
+	}
+
+	m := &model.Network{}
+	entities[0].ApplyTo(m)
+	if m.Name != "Production-VLAN-100" || m.VlanID != 100 {
+		t.Fatalf("unexpected mapped subnet: %+v", m)
+	}
+}
+
+// TestClientListSubnetsElement verifies listSubnets() stays on the v3
+// "subnet" kind when the provider is configured for Prism Element (which
+// has no v4 surface).
+func TestClientListSubnetsElement(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/nutanix/v3/clusters/list":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"entities":[]}`))
+		case "/api/nutanix/v3/prism_central":
+			w.WriteHeader(http.StatusNotFound)
+		case "/api/nutanix/v3/subnets/list":
+			if r.Method != "POST" {
+				t.Errorf("Expected POST, got %s", r.Method)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"entities":[]}`))
+		case "/api/networking/v4.4/config/subnets":
+			t.Fatal("Prism Element must not call the v4 networking endpoint")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := createTestClientWithSettings(server.URL, map[string]string{
+		api.NutanixPrismType: api.NutanixPrismElement,
+	})
+	client.url = server.URL
+	mustConnect(t, client)
+
+	if _, err := client.listSubnets(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+}
+
+// TestClientListClustersCentral verifies that listClusters() dispatches
+// to Prism Central's v4 clustermgmt endpoint (rather than the v3
+// "cluster" kind used on Prism Element), and that the Prism Central
+// pseudo-cluster (clusterFunction=[PRISM_CENTRAL]) is still excluded via
+// the shared isPrismCentralCluster() check.
+func TestClientListClustersCentral(t *testing.T) {
+	data, err := os.ReadFile("testdata/clusters_v4_list.json")
+	if err != nil {
+		t.Fatalf("Failed to read testdata: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/nutanix/v3/clusters/list":
+			// Connect()'s own connectivity sanity check hits this
+			// regardless of Prism mode.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"entities":[]}`))
+		case "/api/clustermgmt/v4.3/config/clusters":
+			if r.Method != "GET" {
+				t.Errorf("Expected GET, got %s", r.Method)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := createTestClientWithSettings(server.URL, map[string]string{
+		api.NutanixPrismType: api.NutanixPrismCentral,
+	})
+	client.url = server.URL
+	mustConnect(t, client)
+
+	entities, err := client.listClusters()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	// The fixture has 2 entries; the PRISM_CENTRAL pseudo-cluster must be
+	// excluded, leaving 1.
+	if len(entities) != 1 {
+		t.Fatalf("Expected 1 cluster (pseudo-cluster excluded), got %d: %+v", len(entities), entities)
+	}
+	if entities[0].Metadata.Name != "prod-cluster-01" {
+		t.Fatalf("unexpected cluster: %+v", entities[0])
+	}
+}
+
 func TestClientListImagesCentral(t *testing.T) {
 	data, err := os.ReadFile("testdata/images_v4_list.json")
 	if err != nil {
@@ -545,15 +686,27 @@ func TestClientListImages(t *testing.T) {
 // scopes the clusters list down to just that cluster, instead of every
 // cluster registered to Prism Central.
 func TestClientListClusters_ScopedToCluster(t *testing.T) {
-	data, err := os.ReadFile("testdata/clusters_list.json")
+	// Central mode routes listClusters() through the v4 clustermgmt
+	// endpoint (see TestClientListClustersCentral), so this needs
+	// v4-shaped fixture data, not the v3 clusters_list.json.
+	data, err := os.ReadFile("testdata/clusters_v4_list.json")
 	if err != nil {
 		t.Fatalf("Failed to read testdata: %v", err)
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(data)
+		switch r.URL.Path {
+		case "/api/nutanix/v3/clusters/list":
+			// Connect()'s own connectivity sanity check hits this
+			// regardless of Prism mode.
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"entities":[]}`))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+		}
 	}))
 	defer server.Close()
 

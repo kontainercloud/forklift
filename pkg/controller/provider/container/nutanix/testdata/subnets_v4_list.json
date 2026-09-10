@@ -1,0 +1,43 @@
+{
+  "data": [
+    {
+      "extId": "0005d123-4567-89ab-cdef-000000000001",
+      "name": "Production-VLAN-100",
+      "clusterReference": "0005e123-4567-89ab-cdef-000000000001",
+      "networkId": 100,
+      "subnetType": "VLAN",
+      "ipConfig": [
+        {
+          "ipv4": {
+            "ipSubnet": {"ip": {"value": "192.168.100.0"}, "prefixLength": 24},
+            "defaultGatewayIp": {"value": "192.168.100.1"},
+            "poolList": [
+              {"startIp": {"value": "192.168.100.100"}, "endIp": {"value": "192.168.100.200"}}
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "extId": "0005d123-4567-89ab-cdef-000000000002",
+      "name": "Production-VLAN-200",
+      "clusterReference": "0005e123-4567-89ab-cdef-000000000001",
+      "networkId": 200,
+      "subnetType": "VLAN",
+      "ipConfig": [
+        {
+          "ipv4": {
+            "ipSubnet": {"ip": {"value": "192.168.200.0"}, "prefixLength": 24},
+            "defaultGatewayIp": {"value": "192.168.200.1"},
+            "poolList": [
+              {"startIp": {"value": "192.168.200.50"}, "endIp": {"value": "192.168.200.150"}}
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "totalAvailableResults": 2
+  }
+}
