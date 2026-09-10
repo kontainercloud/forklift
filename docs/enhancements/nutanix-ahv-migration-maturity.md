@@ -36,6 +36,15 @@ see-also:
    (partner/API access, licensing, support commitments) before Phase 5
    (warm migration) can be scoped as `implementable`. See
    [Warm migration / CBT feasibility](#gap-tier-4-warm-migration--change-tracking).
+
+   **Resolved, 2026-09-10 — not a hard restriction.** Nutanix's own
+   documentation states this as advisory guidance ("consider going
+   through your backup vendor"), not a stated partnership, certification,
+   or licensing requirement to call the API directly — no Nutanix source
+   found states a technical or contractual access gate. A Nutanix contact
+   is no longer the blocker for Phase 5; see the Tier 4 status note below
+   for what actually is (a CDI-side delta-consumption mechanism that
+   doesn't exist yet).
 2. ~~Can virt-v2v's `-i disk` input mode run against a network-attached
    block device (nbdkit `curl`/`ssh` plugin) rather than a fully-downloaded
    local file?~~ **Resolved by a real spike, 2026-09-10 — yes, via a
@@ -213,6 +222,21 @@ see-also:
    maintenance with multi-year runway. This doesn't change the underlying
    feasibility question, but it does mean Phase 0's version research should
    explicitly target 7.5/7.6 behavior, not just confirm 7.3 GA status.
+
+   **Resolved, 2026-09-10, for the `dataprotection` namespace
+   specifically — GA, confirmed against the current official SDK rather
+   than the changelog/support-case route this question originally
+   proposed.** `dataprotection-go-client`'s currently-published API paths
+   (`recovery-points`, `compute-changed-regions`, and the rest of the
+   recovery-point CRUD/action surface) are all at `v4.4` — unsuffixed, no
+   `.aN`/`.bN` — the same GA-versioning convention already used to
+   confirm Tier 0's four endpoints. This doesn't independently re-derive
+   which AOS/PC release first shipped it at GA (still worth confirming
+   against a changelog if precision on the version floor matters), but it
+   does settle the yes/no "has this endpoint left EA/RC" question this
+   item was actually gating implementation on. See the Tier 4 status note
+   for the schema details this uncovered, and why API-access resolution
+   alone doesn't unblock implementation.
 5. **What is Forklift's position on the Nutanix legacy-API deprecation
    timeline** (see [Gap Tier 0](#gap-tier-0-legacy-prism-api-deprecation-time-bound))?
    Specifically: should the v2.0/v3 → v4 migration for existing,
@@ -1125,8 +1149,114 @@ ranges from the corresponding catalog image/disk export → repeat on an
 interval → on cutover, do a final delta pass, then power off the source and
 finalize.
 
-**Estimated effort:** unknown until Open Questions #1 and #4 are resolved;
-treat as a research spike deliverable, not an estimated implementation.
+**Status, 2026-09-10: both of the open questions above are resolved, but
+resolving them surfaced a deeper, previously-undocumented blocker that
+this tier's original framing didn't anticipate.**
+
+Re-researched both blockers against Nutanix's own currently-published Go
+SDK (`dataprotection-go-client`), the same primary-source discipline
+already applied to Tier 0's four endpoints, rather than relying further on
+the single blog post this section originally cited:
+
+- **Open Question #1 (partner-gating) is not a hard restriction.** The
+  "if you are not a backup vendor" line is advisory guidance recommending
+  non-vendors go through their backup provider, not a stated
+  partnership/certification/licensing requirement to call the API
+  directly. Nothing in Nutanix's own documentation states a technical or
+  contractual gate on invoking it.
+- **GA status is now confirmed, not inferred.** The blog's example path
+  uses `v4.0.b1` (RC-suffixed); the currently-published official SDK has
+  the same endpoint family at `v4.4` (unsuffixed = GA) — the same
+  stale-blog-vs-current-SDK pattern already caught and corrected for Tier
+  0's cluster/host/subnet/VM-listing endpoints. The real shape is bigger
+  than the blog implied, though: `compute-changed-regions` is nested
+  three levels deep (`recovery-points/{id}/vm-recovery-points/{id}/
+  disk-recovery-points/{id}/$actions/compute-changed-regions`), needs an
+  on-demand `RecoveryPoint` created first (`POST
+  /api/dataprotection/v4.4/config/recovery-points` with a `VmRecoveryPoints:
+  [{VmExtId}]` body, returning an async `TaskReference` per the standard
+  v4 Prism task pattern — `GET /api/prism/v4.4/config/tasks/{extId}`,
+  itself confirmed GA — polled to `SUCCEEDED`, with the created recovery
+  point's extId read from the completed task's `EntitiesAffected`), and
+  pagination for large changed-region lists is via `Metadata.Links`
+  (standard v4 HATEOAS), not the blog's claimed `nextOffset` body cursor.
+
+**But this API-access research, while genuinely resolving Open Questions
+#1 and #4, surfaced a separate and more fundamental problem: there is no
+mechanism in CDI for anything Nutanix computes here to actually be
+consumed.** `SetCheckpoints` (`Client` interface,
+`pkg/controller/plan/adapter/base/doc.go`) works by writing
+`cdi.DataVolumeCheckpoint{Previous, Current}` onto the DataVolume spec —
+but that only produces a real incremental transfer because CDI's
+importer for the two providers that actually use it today has
+native delta-aware logic built in: vSphere's importer links against
+VMware's own VDDK library (`dv.Spec.Source.VDDK`), and oVirt's against
+oVirt's ImageIO protocol (`dv.Spec.Source.Imageio`) — both of which
+have their own out-of-band changed-block-tracking the importer calls
+into, using the checkpoint IDs as opaque references. Confirmed directly
+against the vendored CDI API types
+(`kubevirt.io/containerized-data-importer-api@v1.64.0`):
+`DataVolumeSourceHTTP` — the only source type available to Nutanix, the
+same one its cold migration already uses — has no checkpoint-related
+field at all, just `URL`/`SecretRef`/`CertConfigMap`/headers. CDI's HTTP
+importer always does a full GET; there is no generic "two checkpoint IDs
+in, delta out" capability for HTTP sources the way there is for
+VDDK/ImageIO.
+
+The practical consequence: even a fully correct implementation of
+`CreateSnapshot`/`RemoveSnapshot`/`CheckSnapshotReady`/
+`CheckSnapshotRemove`/`GetSnapshotDeltas`/`SetCheckpoints` against the
+verified CRT schema above would compute real changed-region data that
+nothing downstream can act on. `SetCheckpoints` would write real
+`Previous`/`Current` values onto the DataVolume, but CDI's HTTP importer
+would silently ignore them and re-download the entire disk on every
+precopy interval anyway — the same transfer cost as today's cold
+migration, plus the added overhead of the snapshot/CRT API calls, while
+presenting itself to the user as a real incremental warm migration. That
+is worse than not implementing it: a warm-migration UI/CRD surface that
+silently does full-disk copies every cycle is actively misleading, not
+merely incomplete.
+
+**What would actually be needed:** either (a) upstream CDI work to add a
+byte-range/checkpoint-aware HTTP or Nutanix-native DataVolumeSource type
+— outside this project's control and a substantial cross-project
+dependency, or (b) a Forklift-authored custom populator that bypasses
+CDI's HTTP source entirely and manages incremental Nutanix disk sync
+itself — reading the CRT API's changed-region list and writing only
+those byte ranges directly into the destination PVC/volume, the same
+general shape as `vsphere-copy-offload-populator.md`'s xcopy populator,
+but for byte-range-level incremental writes rather than array-side
+cloning. Option (b) is new-feature-scale engineering, not a port, and
+has its own unresolved question: Nutanix's real image-download endpoint
+already doesn't support HTTP Range requests (see Tier 3's finding), so
+even a custom populator would need to either find a different
+byte-range-capable read path into the source disk, or fall back to
+downloading the full disk anyway and writing only the changed offsets
+into the destination — which recovers correctness but not the network
+transfer savings, undercutting warm migration's actual value
+proposition (its purpose is reducing what needs to move during a
+maintenance window, not just what gets written to the destination).
+
+**Decision: stop here, no code changes.** `Validator.WarmMigration()`
+remains hardcoded `false` for Nutanix, and none of the six `Client`
+interface methods (`CreateSnapshot`, `RemoveSnapshot`, `GetSnapshotDeltas`,
+`SetCheckpoints`, `CheckSnapshotReady`, `CheckSnapshotRemove`) were
+touched — writing them against the verified CRT schema was considered and
+explicitly declined, since they would be real, buildable, schema-correct
+code with no working consumer, which is a worse outcome than not writing
+them at all. The CRT API schema captured above is accurate and
+implementable groundwork for whichever of options (a)/(b) is pursued
+later, but the actual next step for this tier is a design decision (build
+a custom populator? wait on upstream CDI? accept full-disk-per-cycle as
+"warm" in name only?), not more code.
+
+**Estimated effort:** Open Questions #1 and #4 (API access/GA status) are
+now resolved. The CRT client-code implementation itself is a known,
+moderate-sized, schema-grounded effort (comparable to Tier 0's inventory
+port). The real unknown is the delta-consumption mechanism (custom
+populator vs. upstream CDI work), which is unscoped and should be treated
+as its own research/design spike before any implementation estimate is
+attached to this tier.
 
 ### Gap Tier 5: Tooling, CLI, tests, docs
 
@@ -1209,10 +1339,12 @@ Proposed Phasing below).
   download-cookie secrets in `builder.go` (`ensureDownloadCookieSecret`),
   i.e. stored in a Kubernetes `Secret`, never logged, rotated per poll
   cycle rather than cached long-term.
-- **Partner-program dependency.** If Open Question #1 resolves to "CRT
-  requires a Nutanix backup-vendor partnership," that's a business/legal
-  dependency external to engineering effort, and Tier 4 should be
-  explicitly marked blocked rather than estimated until resolved.
+- **Partner-program dependency — resolved, no longer applies.** Open
+  Question #1 was checked, 2026-09-10: the CRT API's "backup vendor"
+  language is advisory, not a stated partnership requirement, so this
+  specific risk doesn't materialize. Tier 4's actual blocker is a design
+  gap (no CDI-side mechanism to consume computed deltas for an HTTP
+  source), not a business/legal dependency — see Tier 4's status note.
 - **Deferred legacy-API migration risk.** If Tier 0 is deprioritized behind
   the vSphere-parity tiers, the project risks reaching Nutanix's Q2 CY2027
   last-GA-release milestone (or the Q4 CY2027 start of phased removal)
@@ -1231,7 +1363,7 @@ Proposed Phasing below).
 | Phase 2 | Tier 1 validator correctness + `validator_test.go` + compatibility-matrix docs update — **done 2026-09-10** | Benefits from Phase 1 landing first (shares the same client code) but not strictly blocked on it | Yes |
 | Phase 3 | Tier 2 items with no external dependency: OS/Preference mapping, shared/excluded-disk model extension + validation, category→label mapping — **done 2026-09-10** | Not strictly blocked on Phase 2, but the shared/excluded-disk validator work benefits from landing after it (same test-fixture patterns) | Yes |
 | Phase 4 | Tier 3 guest customization (conversion pod) — **implemented 2026-09-10, behind the opt-in `Spec.NutanixGuestConversion` flag (default off)**, but only the in-place mode: the conversion pod now gets created and runs virt-v2v against the already-CDI-imported disk, avoiding the streaming/Range-support problem entirely rather than solving it. The full-download-fallback design this row used to describe (for virt-v2v-does-the-transfer/streaming mode) was not needed and was not built | None remaining to *ship* the code (done); real validation against a live OpenShift + Nutanix environment is the only thing left before recommending the flag to users | Yes — ships inert by default |
-| Phase 5 | Tier 4 warm migration | Phase 0's Nutanix partner-access and version-confirmation results, and reuses Phase 4's disk-access patterns if any | No — blocked on Phase 0, likely also on Phase 4 |
+| Phase 5 | Tier 4 warm migration — **API-access research done, 2026-09-10: Open Questions #1/#4 resolved (CRT API is GA at v4.4, no partner-access gate), but a deeper blocker was found — CDI's HTTP DataVolume source (Nutanix's only option) has no checkpoint/delta-consumption mechanism at all, unlike vSphere's VDDK or oVirt's ImageIO sources. The CRT client code was deliberately not written, since it would have no working consumer** | A design decision on the delta-consumption mechanism (custom populator vs. upstream CDI work), not Nutanix partner access, is now the blocker | No — blocked on a new design spike, not Phase 0 |
 | Ongoing | Tier 5 tooling/CLI/tests/docs — compatibility docs and `nutanix-setup-guide.md` **done 2026-09-10** | Tracks alongside each phase above | N/A |
 
 Phases 1–3 should be scoped as normal `implementable` enhancements once
@@ -1586,6 +1718,36 @@ surface anticipated there either.
   pass. None of this has run against a real OpenShift + Nutanix
   environment — that remains the precondition for recommending the flag
   to any user, which is why it ships off by default.
+- 2026-09-10 — **Researched Tier 4 (warm migration) API access against
+  Nutanix's official `dataprotection-go-client` SDK, resolving both open
+  questions, then found a deeper blocker before writing any code.**
+  Confirmed the "backup vendor" language in the previously-cited blog
+  post is advisory, not a technical/contractual access gate (Open
+  Question #1), and confirmed the CRT API family is GA at `v4.4` in the
+  current SDK versus the blog's RC-suffixed `v4.0.b1` example — the same
+  stale-blog-vs-current-SDK correction already applied to Tier 0 (Open
+  Question #4). Mapped the real (three-level-nested) endpoint shape:
+  on-demand recovery-point creation via the standard async
+  Prism-task pattern (`GET /api/prism/v4.4/config/tasks/{extId}`, also
+  GA), changed-region computation nested under
+  `recovery-points/{id}/vm-recovery-points/{id}/disk-recovery-points/{id}/
+  $actions/compute-changed-regions`, and HATEOAS-link-based pagination
+  (not the blog's claimed `nextOffset` cursor). But tracing how the
+  computed deltas would actually reach the destination PVC found that
+  CDI's `DataVolumeSourceHTTP` (Nutanix's only source type, confirmed
+  against the vendored CDI API types) has no checkpoint field at all,
+  unlike vSphere's VDDK-backed and oVirt's ImageIO-backed sources, which
+  have native delta-aware importers CDI calls into. Writing the six
+  `Client` interface methods against the verified schema would produce
+  correct data with no working consumer — `SetCheckpoints` would write
+  real values CDI's HTTP importer would silently ignore, full-copying
+  every precopy cycle while presenting itself as a working warm
+  migration. Decided not to write that code: a misleadingly-inert
+  warm-migration surface is a worse outcome than an honestly-absent one.
+  `Validator.WarmMigration()` stays `false`; the design doc records the
+  verified CRT schema as groundwork and reframes the real remaining
+  blocker as a delta-consumption design decision (custom populator vs.
+  upstream CDI work), not Nutanix partner access.
 
 ## Drawbacks
 
@@ -1595,12 +1757,16 @@ surface anticipated there either.
   "cold migration, no guest customization" maturity. Phase sequencing
   should be revisited at each phase boundary rather than treated as a
   fire-and-forget backlog.
-- Phase 5 (and part of Phase 4) depend on external factors (Nutanix
-  partner access, unconfirmed API GA status) that engineering cannot
-  unilaterally resolve — Phase 4's core virt-v2v integration question was
-  resolved by direct testing this session, but two narrower items
-  (Range-request support on Nutanix's real endpoints, credential passing)
-  still need verification before it's a hard release candidate.
+- Phase 4 shipped (2026-09-10, behind an opt-in flag), and Phase 5's
+  external-dependency framing turned out to be wrong: Nutanix partner
+  access and API GA status (the originally-cited blockers) were both
+  resolved by this session without needing Nutanix's involvement. Phase 5
+  is now blocked on an internal design decision (how computed CRT deltas
+  would reach a destination PVC, since CDI's HTTP source has no
+  checkpoint mechanism) that engineering *can* unilaterally resolve, just
+  hasn't yet scoped. Phase 4's remaining gap is real-environment
+  validation (an OpenShift + Nutanix VM to confirm the guest-conversion
+  path actually boots something), not a technical unknown.
 - Tier 0's timeline is set by Nutanix, not this project; if Phase 0's
   research is wrong about the runway (e.g. if Nutanix accelerates the
   schedule in a future bulletin revision, as it already revised once
@@ -1640,5 +1806,11 @@ surface anticipated there either.
   (essentially immediately relative to this document); 7.5/7.6 have
   multi-year maintenance runway and are the more realistic target for any
   implementation that would ship after Phase 0 completes.
-- A contact point at Nutanix (partner engineering or API support) to
-  resolve Open Questions #1 and #4 before Phase 5 can be scoped.
+- ~~A contact point at Nutanix (partner engineering or API support) to
+  resolve Open Questions #1 and #4 before Phase 5 can be scoped.~~
+  **No longer the blocker, 2026-09-10:** both were resolved against
+  Nutanix's official SDK without needing a partner contact (see Open
+  Questions #1/#4 and Tier 4's status note). Phase 5 is now blocked on a
+  design decision about how computed changed-regions would actually reach
+  the destination PVC (CDI has no consumer for them today), not on
+  Nutanix access.
