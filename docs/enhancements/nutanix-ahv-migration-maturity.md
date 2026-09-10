@@ -583,18 +583,28 @@ behind a separate `/stats/clusters/{extId}` call this collector doesn't
 make, to avoid an N+1 call per cluster) — `TotalCapacity`/`UsedCapacity`
 are left at zero for Prism Central-sourced clusters.
 
-**Still open: VM and Host listing.** These remain on v3 for both Prism
-modes. Unlike Cluster/Subnet, the v4 `Vm` model is substantially larger
-(dozens of fields spanning disks, NICs, GPUs, boot config, guest tools) and
-a mapping error there is more consequential (VM is the actual migration
-subject — wrong disk/NIC data could silently misconfigure a migrated VM,
-not just misreport a dashboard stat the way a wrong cluster capacity
-number would). Host wasn't reattempted this pass either, simply for time —
-its v4 shape wasn't re-researched after finding the global (not
-per-cluster-only) `config/hosts` endpoint earlier. Both should follow the
-same official-SDK-as-schema-source approach that worked for
-Cluster/Subnet, ideally validated against a live v4-capable Prism Central
-once one is available, with VM taking priority as the higher-value target.
+**Status: host listing implemented too, 2026-09-10.** `listHosts` now
+dual-paths the same way, using the confirmed *global*
+`clustermgmt/v4.3/config/hosts` endpoint (not the per-cluster-nested
+variant that also exists). One real find worth flagging for Tier 1: v4's
+Host entity carries a `maintenanceState` string field with no v3
+equivalent — a promising lead for closing the `MaintenanceMode` validator
+gap below, but its actual value strings aren't documented in the SDK's
+generated Go types (unlike the enum fields used elsewhere in this port,
+which had named constants), so it's deliberately left unmapped rather than
+guessed at. Confirming those values (live probe or Nutanix's REST
+documentation) is the natural next step for that gap.
+
+**Still open: VM listing.** This is the one entity left on v3 for both
+Prism modes. Unlike Cluster/Subnet/Host, the v4 `Vm` model is
+substantially larger (dozens of fields spanning disks, NICs, GPUs, boot
+config, guest tools) and a mapping error there is more consequential — VM
+is the actual migration subject, so wrong disk/NIC data could silently
+misconfigure a migrated VM, not just misreport a dashboard stat the way a
+wrong cluster/host field would. Should follow the same
+official-SDK-as-schema-source approach that worked for the other three,
+ideally validated against a live v4-capable Prism Central once one is
+available.
 
 ### Gap Tier 1: Validator correctness
 
@@ -650,6 +660,16 @@ exhaustive, for a real multi-node cluster.) `MaintenanceMode` stays a
 hardcoded pass; closing it needs either a multi-node Nutanix cluster to
 probe the real API surface directly, or confirmation from Nutanix of
 which endpoint (if any) exposes this.
+
+**New lead, 2026-09-10 (v4, Prism Central only):** the host-listing v4
+port (Tier 0) found that v4's Host entity carries a `maintenanceState`
+string field with no v3 equivalent — a real, concrete lead this negative
+v3 finding didn't have. Not wired up yet: its value strings aren't
+documented in the SDK's generated Go types the way other v4 enum fields
+in this document are (which had named Go constants to read directly), so
+mapping it to a boolean now would be guessing rather than verifying. This
+doesn't help Prism-Element-only deployments (which have no v4 surface at
+all), so the v3/multi-node-cluster question above still stands for those.
 
 **Estimated effort:** small — a few days per method, mostly following the
 vSphere pattern and reusing `planbase` helpers. This tier has no dependency
@@ -1066,7 +1086,7 @@ Proposed Phasing below).
 | Phase | Scope | Depends on | Ships independently? |
 |---|---|---|---|
 | Phase 0 | Resolve the remaining open questions — #1 (Nutanix partner conversation), ~~#2 (virt-v2v spike)~~ **done 2026-09-10**, #4 (`compute-changed-regions` GA-status confirmation, now broadened to Tier 0's endpoints too), #5 (Tier 0 sequencing decision). Open Question #3 (categories) was already resolved. | — | Yes — pure research |
-| Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory, Prism Element image/storage-container handling, and the v3-based VM lifecycle calls in `client.go` — `getVM`, `setPowerState`, `transitionPowerState`) — **VM lifecycle, cluster listing, and subnet listing done 2026-09-10**; host and VM listing still open (VM is the higher-value remaining target) | — | Yes |
+| Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory, Prism Element image/storage-container handling, and the v3-based VM lifecycle calls in `client.go` — `getVM`, `setPowerState`, `transitionPowerState`) — **VM lifecycle, cluster, subnet, and host listing all done 2026-09-10**; only VM listing remains, the highest-value and highest-risk of the four | — | Yes |
 | Phase 2 | Tier 1 validator correctness + `validator_test.go` + compatibility-matrix docs update — **done 2026-09-10** | Benefits from Phase 1 landing first (shares the same client code) but not strictly blocked on it | Yes |
 | Phase 3 | Tier 2 items with no external dependency: OS/Preference mapping, shared/excluded-disk model extension + validation, category→label mapping — **done 2026-09-10** | Not strictly blocked on Phase 2, but the shared/excluded-disk validator work benefits from landing after it (same test-fixture patterns) | Yes |
 | Phase 4 | Tier 3 guest customization (conversion pod) | Open Question #2 is resolved (see Tier 3): the mechanism works, but Nutanix's real image endpoint doesn't support the Range requests it needs, so a full-download fallback is required instead of true streaming. Credential passing through libvirt XML `<auth>` is still untested (sandbox-blocked, not design-blocked) | Unblocked enough to scope a first version around the download-fallback path; still needs a credential-passing decision and the guest-customization logic itself |
@@ -1348,6 +1368,16 @@ surface anticipated there either.
   `listHosts` remain on v3 — VM's v4 model is both larger and
   higher-consequence to get wrong, and Host wasn't reattempted this pass.
   See the updated Tier 0 section.
+- 2026-09-10 — **Ported `listHosts` to v4 too**, closing three of Tier 0's
+  four inventory-listing endpoints (cluster, subnet, host — only VM
+  remains). Found v4's Host entity carries a `maintenanceState` field
+  with no v3 equivalent — a real lead for the still-open `MaintenanceMode`
+  validator gap (Tier 1), not wired up since its value strings aren't
+  documented in the SDK's generated types. Fixed two pre-existing tests
+  (`TestClientListHosts_ScopedToCluster`,
+  `TestClientListClusters_ScopedToCluster`) that exercised Central mode
+  with v3-shaped fixtures now that Central mode routes those calls
+  through v4.
 
 ## Drawbacks
 
