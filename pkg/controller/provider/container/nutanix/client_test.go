@@ -843,7 +843,7 @@ func TestClientListHosts_ScopedToCluster(t *testing.T) {
 // the VM list to VMs belonging to that cluster, and that leaving it unset
 // (the default) still returns VMs across every cluster.
 func TestClientListVMs_ScopedToCluster(t *testing.T) {
-	data, err := os.ReadFile("testdata/vms_list.json")
+	data, err := os.ReadFile("testdata/vms_v4_list_scoped.json")
 	if err != nil {
 		t.Fatalf("Failed to read testdata: %v", err)
 	}
@@ -851,7 +851,14 @@ func TestClientListVMs_ScopedToCluster(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(data)
+		switch r.URL.Path {
+		case "/api/nutanix/v3/clusters/list":
+			_, _ = w.Write([]byte(`{"entities":[]}`))
+		case "/api/vmm/v4.3/ahv/config/vms":
+			_, _ = w.Write(data)
+		default:
+			t.Fatalf("Unexpected request path: %s", r.URL.Path)
+		}
 	}))
 	defer server.Close()
 
@@ -1128,5 +1135,93 @@ func TestClientErrorHandling(t *testing.T) {
 func TestProviderType(t *testing.T) {
 	if api.Nutanix != "nutanix" {
 		t.Errorf("Expected provider type 'nutanix', got %s", api.Nutanix)
+	}
+}
+
+// TestClientListVMsCentral verifies that listVMs() dispatches to Prism
+// Central's v4 vmm endpoint (rather than the v3 "vm" kind used on Prism
+// Element), and that the resulting entities map correctly through
+// vmV4Raw.toEntity() and the shared vmEntity.ApplyTo().
+func TestClientListVMsCentral(t *testing.T) {
+	data, err := os.ReadFile("testdata/vms_v4_list.json")
+	if err != nil {
+		t.Fatalf("Failed to read testdata: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/nutanix/v3/clusters/list":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"entities":[]}`))
+		case "/api/vmm/v4.3/ahv/config/vms":
+			if r.Method != "GET" {
+				t.Errorf("Expected GET, got %s", r.Method)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+		default:
+			t.Fatalf("Unexpected request path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := createTestClientWithSettings(server.URL, map[string]string{
+		api.NutanixPrismType: api.NutanixPrismCentral,
+	})
+	client.url = server.URL
+	mustConnect(t, client)
+
+	entities, err := client.listVMs()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(entities) != 2 {
+		t.Fatalf("Expected 2 VMs, got %d", len(entities))
+	}
+
+	m := &model.VM{}
+	entities[0].ApplyTo(m)
+	if m.Name != "web-01" || m.PowerState != "ON" || len(m.Disks) != 2 || len(m.NICs) != 1 {
+		t.Fatalf("unexpected mapped VM: %+v", m)
+	}
+}
+
+// TestClientListVMsElement verifies listVMs() stays on the v3 "vm" kind
+// when the provider is configured for Prism Element (which has no v4
+// surface).
+func TestClientListVMsElement(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/nutanix/v3/clusters/list":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"entities":[]}`))
+		case "/api/nutanix/v3/prism_central":
+			w.WriteHeader(http.StatusNotFound)
+		case "/api/nutanix/v3/vms/list":
+			if r.Method != "POST" {
+				t.Errorf("Expected POST, got %s", r.Method)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"entities":[]}`))
+		case "/api/vmm/v4.3/ahv/config/vms":
+			t.Fatal("Prism Element must not call the v4 vmm endpoint")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := createTestClientWithSettings(server.URL, map[string]string{
+		api.NutanixPrismType: api.NutanixPrismElement,
+	})
+	client.url = server.URL
+	mustConnect(t, client)
+
+	if _, err := client.listVMs(); err != nil {
+		t.Fatalf("Unexpected error: %v", err)
 	}
 }

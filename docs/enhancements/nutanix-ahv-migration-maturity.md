@@ -595,16 +595,41 @@ which had named constants), so it's deliberately left unmapped rather than
 guessed at. Confirming those values (live probe or Nutanix's REST
 documentation) is the natural next step for that gap.
 
-**Still open: VM listing.** This is the one entity left on v3 for both
-Prism modes. Unlike Cluster/Subnet/Host, the v4 `Vm` model is
-substantially larger (dozens of fields spanning disks, NICs, GPUs, boot
-config, guest tools) and a mapping error there is more consequential — VM
-is the actual migration subject, so wrong disk/NIC data could silently
-misconfigure a migrated VM, not just misreport a dashboard stat the way a
-wrong cluster/host field would. Should follow the same
-official-SDK-as-schema-source approach that worked for the other three,
-ideally validated against a live v4-capable Prism Central once one is
-available.
+**Status: VM listing implemented too, 2026-09-10 — Tier 0's inventory-collector
+port is now complete for all four entities.** `listVMs` dual-paths the same
+way as `listClusters`/`listHosts`/`listSubnets`, using the confirmed
+`GET /api/vmm/v4.3/ahv/config/vms` endpoint (same version pin as the
+existing VM-lifecycle port's `vmV4Path` in the plan adapter's
+`client.go`). This was the highest-consequence entity of the four — VM is
+the actual migration subject, so a wrong disk/NIC/boot-config mapping could
+silently misconfigure a migrated VM, not just misreport a dashboard stat —
+so its schema (`vmV4Raw` in `raw.go`) was sourced directly from Nutanix's
+official Go SDK's generated model *and* its separately-published VM API
+definition (confirming the list path), the same discipline used for the
+other three entities, with fixture-based tests covering the full shape:
+legacy boot, UEFI, UEFI+secure-boot, a container-backed disk, a cd-rom
+(now a schema-mandated separate field, `Vm.CdRoms`, from `Vm.Disks` — v4
+splits what v3 mixed into one list; folded back into `model.VM.Disks` with
+`IsCdrom: true` so every existing downstream consumer keeps working
+unchanged), a NIC with a learned IP, a serial port, and guest tools.
+
+Two deliberate, documented gaps, not guessed at:
+
+- **Categories.** v4's `Vm.Categories` only carries a bare `extId` per
+  entry (`CategoryReference{ExtId}`), unlike v3's `metadata.categories`
+  map of key:value strings. Resolving the actual key:value pair needs a
+  separate category-by-extId lookup this collector doesn't make (the same
+  N+1-avoidance tradeoff as Cluster's capacity-stats gap above) — left
+  empty for Prism Central-sourced VMs.
+- **GuestOSID.** v4 has no `guestOsId`-equivalent field anywhere on `Vm`
+  or `GuestTools`, only the free-text `GuestInfo.GuestOsFullName` (mapped
+  to `model.VM.GuestOSVersion` instead) — consistent with this session's
+  earlier finding that v3's `guest_os_id` is unreliable in practice (see
+  Tier 2's `TemplateLabels` discussion), now confirmed absent outright in
+  v4 rather than just unreliable.
+
+Not yet exercised against a live v4-capable Prism Central — the same
+caveat as Cluster/Subnet/Host's v4 paths above.
 
 ### Gap Tier 1: Validator correctness
 
@@ -1086,7 +1111,7 @@ Proposed Phasing below).
 | Phase | Scope | Depends on | Ships independently? |
 |---|---|---|---|
 | Phase 0 | Resolve the remaining open questions — #1 (Nutanix partner conversation), ~~#2 (virt-v2v spike)~~ **done 2026-09-10**, #4 (`compute-changed-regions` GA-status confirmation, now broadened to Tier 0's endpoints too), #5 (Tier 0 sequencing decision). Open Question #3 (categories) was already resolved. | — | Yes — pure research |
-| Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory, Prism Element image/storage-container handling, and the v3-based VM lifecycle calls in `client.go` — `getVM`, `setPowerState`, `transitionPowerState`) — **VM lifecycle, cluster, subnet, and host listing all done 2026-09-10**; only VM listing remains, the highest-value and highest-risk of the four | — | Yes |
+| Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory, Prism Element image/storage-container handling, and the v3-based VM lifecycle calls in `client.go` — `getVM`, `setPowerState`, `transitionPowerState`) — **VM lifecycle, cluster, subnet, host, and VM listing all done 2026-09-10 (all four inventory entities plus lifecycle)**; remaining work is validating the v4 paths/schemas against a live Prism Central (none of this was exercised against a real server) and the OData-filter/host-maintenance-mode follow-ups noted in Tier 0 | — | Yes |
 | Phase 2 | Tier 1 validator correctness + `validator_test.go` + compatibility-matrix docs update — **done 2026-09-10** | Benefits from Phase 1 landing first (shares the same client code) but not strictly blocked on it | Yes |
 | Phase 3 | Tier 2 items with no external dependency: OS/Preference mapping, shared/excluded-disk model extension + validation, category→label mapping — **done 2026-09-10** | Not strictly blocked on Phase 2, but the shared/excluded-disk validator work benefits from landing after it (same test-fixture patterns) | Yes |
 | Phase 4 | Tier 3 guest customization (conversion pod) | Open Question #2 is resolved (see Tier 3): the mechanism works, but Nutanix's real image endpoint doesn't support the Range requests it needs, so a full-download fallback is required instead of true streaming. Credential passing through libvirt XML `<auth>` is still untested (sandbox-blocked, not design-blocked) | Unblocked enough to scope a first version around the download-fallback path; still needs a credential-passing decision and the guest-customization logic itself |
@@ -1378,6 +1403,35 @@ surface anticipated there either.
   `TestClientListClusters_ScopedToCluster`) that exercised Central mode
   with v3-shaped fixtures now that Central mode routes those calls
   through v4.
+- 2026-09-10 — **Ported `listVMs` to v4, closing Tier 0's
+  inventory-collector port entirely** (all four entities — cluster, host,
+  subnet, VM — plus the earlier VM-lifecycle actions are now dual-path).
+  This was the deliberately-deferred, highest-consequence entity: v4's
+  `Vm` model uses genuinely polymorphic discriminated-union types
+  (disk/cd-rom backing info distinguished by `$objectType`, legacy vs.
+  UEFI vs. secure-boot boot config likewise), and a wrong mapping here
+  could misconfigure an actual migrated VM rather than just misreport a
+  dashboard stat. Schema (`vmV4Raw` in `raw.go`) was sourced directly from
+  Nutanix's official Go SDK's generated model plus its separately
+  published VM API definition (confirming the `GET
+  /api/vmm/v4.3/ahv/config/vms` list path matches the plan adapter's
+  existing `vmV4Path` version pin), with fixture-based tests covering
+  legacy boot, UEFI, UEFI+secure-boot, a container-backed disk, a cd-rom
+  (v4 splits cd-roms into their own `Vm.CdRoms` field, unlike v3's mixed
+  disk list — folded back into `model.VM.Disks` with `IsCdrom: true` so
+  every existing downstream consumer keeps working unchanged), a NIC with
+  a learned IP, a serial port, and guest tools. Found and documented two
+  new, deliberate gaps rather than guessing: v4's `Categories` only
+  carries a bare `extId` per entry (no inline key:value data the way v3's
+  `metadata.categories` map has — left empty for Prism Central-sourced
+  VMs), and v4 has no `guestOsId`-equivalent field anywhere (confirms,
+  rather than just corroborates, this session's earlier finding that v3's
+  `guest_os_id` is unreliable — see Tier 2). Fixed a third pre-existing
+  test, `TestClientListVMs_ScopedToCluster`, the same way as the
+  cluster/host fixes above (it exercised Central mode with v3-shaped
+  fixtures now that Central mode routes through v4). None of Tier 0's v4
+  paths have been exercised against a live Prism Central yet — that
+  remains the natural next step once one is available.
 
 ## Drawbacks
 

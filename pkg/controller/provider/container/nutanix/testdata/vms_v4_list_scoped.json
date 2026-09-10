@@ -1,0 +1,13 @@
+{
+  "data": [
+    {"extId": "vm-0005a123-4567-89ab-cdef-000000000001", "name": "web-server-rhel8", "cluster": {"extId": "0005e123-4567-89ab-cdef-000000000001"}},
+    {"extId": "vm-0005a123-4567-89ab-cdef-000000000002", "name": "db-server-rhel9", "cluster": {"extId": "0005e123-4567-89ab-cdef-000000000001"}},
+    {"extId": "vm-0005a123-4567-89ab-cdef-000000000003", "name": "win2022-app-server", "cluster": {"extId": "0005e123-4567-89ab-cdef-000000000001"}},
+    {"extId": "vm-0005a123-4567-89ab-cdef-000000000004", "name": "ubuntu-test-vm", "cluster": {"extId": "0005e123-4567-89ab-cdef-000000000002"}},
+    {"extId": "vm-0005a123-4567-89ab-cdef-000000000005", "name": "powered-off-vm", "cluster": {"extId": "0005e123-4567-89ab-cdef-000000000002"}},
+    {"extId": "vm-0005a123-4567-89ab-cdef-000000000006", "name": "secure-boot-vm", "cluster": {"extId": "0005e123-4567-89ab-cdef-000000000001"}}
+  ],
+  "metadata": {
+    "totalAvailableResults": 6
+  }
+}

@@ -36,6 +36,13 @@ const (
 	// Same version-pinning/unverified-against-a-live-server caveat as the
 	// other v4 paths above.
 	hostsV4Path = "/api/clustermgmt/v4.3/config/hosts"
+	// vmsV4Path is Prism Central's vmm (v4) VM list endpoint. Version
+	// pinned to v4.3, matching the pkg/controller/plan/adapter/nutanix
+	// client's vmV4Path (single-VM GET/lifecycle actions), confirmed
+	// consistent against the same official SDK source used for the other
+	// v4 paths above -- see vmV4Raw's doc comment for the schema this
+	// feeds.
+	vmsV4Path = "/api/vmm/v4.3/ahv/config/vms"
 )
 
 // PrismMode identifies whether the provider URL targets Prism Central or Element.

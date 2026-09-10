@@ -291,3 +291,194 @@ func TestHostV4Raw_JSONShape(t *testing.T) {
 		t.Errorf("IPMIAddress = %q, want 10.10.1.60", m.IPMIAddress)
 	}
 }
+
+// TestVMV4Raw_JSONShape guards against the wire schema drifting out of
+// sync with Nutanix's own published SDK (vmm-go-client), the same reason
+// this file's other v4 raw-struct tests exist. This is the
+// highest-consequence entity of the four (a wrong mapping here can
+// misconfigure an actual migrated VM), so it exercises the full shape:
+// legacy boot, a container-backed disk, a cd-rom, a NIC with a learned IP,
+// a serial port, and guest tools.
+func TestVMV4Raw_JSONShape(t *testing.T) {
+	raw := `{
+		"extId": "vm-1",
+		"name": "web-01",
+		"description": "web tier",
+		"cluster": {"extId": "cluster-1"},
+		"host": {"extId": "host-1"},
+		"powerState": "ON",
+		"numSockets": 2,
+		"numCoresPerSocket": 2,
+		"numThreadsPerCore": 1,
+		"memorySizeBytes": 4294967296,
+		"machineType": "PC",
+		"hardwareClockTimezone": "UTC",
+		"isVgaConsoleEnabled": true,
+		"bootConfig": {
+			"$objectType": "vmm.v4.ahv.config.LegacyBoot",
+			"bootOrder": ["DISK", "CDROM"]
+		},
+		"disks": [
+			{
+				"extId": "disk-1",
+				"diskAddress": {"busType": "SCSI", "index": 0},
+				"backingInfo": {
+					"$objectType": "vmm.v4.ahv.config.VmDisk",
+					"diskSizeBytes": 42949672960,
+					"storageContainer": {"extId": "sc-1"}
+				}
+			}
+		],
+		"cdRoms": [
+			{
+				"extId": "cdrom-1",
+				"diskAddress": {"busType": "IDE", "index": 0},
+				"backingInfo": {
+					"$objectType": "vmm.v4.ahv.config.VmDisk",
+					"dataSource": {"reference": {"imageExtId": "img-1"}}
+				}
+			}
+		],
+		"nics": [
+			{
+				"extId": "nic-1",
+				"backingInfo": {"isConnected": true, "macAddress": "50:6b:8d:aa:bb:01", "model": "VIRTIO"},
+				"networkInfo": {
+					"nicType": "NORMAL_NIC",
+					"vlanMode": "ACCESS",
+					"subnet": {"extId": "subnet-1"},
+					"ipv4Info": {"learnedIpAddresses": [{"value": "192.168.100.101"}]}
+				}
+			}
+		],
+		"serialPorts": [{"index": 0, "isConnected": true}],
+		"guestTools": {
+			"isEnabled": true,
+			"isIsoInserted": false,
+			"isReachable": true,
+			"version": "4.1.1",
+			"guestInfo": {"guestOsFullName": "CentOS Linux 7"}
+		}
+	}`
+
+	var r vmV4Raw
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	entity := r.toEntity()
+
+	m := &model.VM{}
+	entity.ApplyTo(m)
+
+	if m.UUID != "vm-1" || m.Name != "web-01" {
+		t.Errorf("unexpected identity: uuid=%q name=%q", m.UUID, m.Name)
+	}
+	if m.Description != "web tier" {
+		t.Errorf("Description = %q, want %q", m.Description, "web tier")
+	}
+	if m.Cluster != "cluster-1" {
+		t.Errorf("Cluster = %q, want cluster-1", m.Cluster)
+	}
+	if m.Host != "host-1" {
+		t.Errorf("Host = %q, want host-1", m.Host)
+	}
+	if m.PowerState != "ON" {
+		t.Errorf("PowerState = %q, want ON", m.PowerState)
+	}
+	if m.NumSockets != 2 || m.NumVcpusPerSocket != 2 || m.NumThreadsPerCore != 1 {
+		t.Errorf("unexpected CPU topology: %+v", m)
+	}
+	if m.MemorySizeMiB != 4096 {
+		t.Errorf("MemorySizeMiB = %d, want 4096", m.MemorySizeMiB)
+	}
+	if m.MachineType != "PC" {
+		t.Errorf("MachineType = %q, want PC", m.MachineType)
+	}
+	if m.BootType != "LEGACY" {
+		t.Errorf("BootType = %q, want LEGACY", m.BootType)
+	}
+	if m.BootDeviceOrder != "DISK,CDROM" {
+		t.Errorf("BootDeviceOrder = %q, want DISK,CDROM", m.BootDeviceOrder)
+	}
+	if !m.VGAConsoleEnabled {
+		t.Error("expected VGAConsoleEnabled")
+	}
+
+	if len(m.Disks) != 2 {
+		t.Fatalf("expected 2 disks (1 disk + 1 cd-rom), got %d", len(m.Disks))
+	}
+	disk, cdrom := m.Disks[0], m.Disks[1]
+	if disk.UUID != "disk-1" || disk.IsCdrom || disk.DiskSizeBytes != 42949672960 || disk.StorageContainerUUID != "sc-1" || disk.AdapterType != "SCSI" {
+		t.Errorf("unexpected disk: %+v", disk)
+	}
+	if cdrom.UUID != "cdrom-1" || !cdrom.IsCdrom || cdrom.DeviceType != "CDROM" || cdrom.SourceImageUUID != "img-1" || cdrom.AdapterType != "IDE" {
+		t.Errorf("unexpected cd-rom: %+v", cdrom)
+	}
+
+	if len(m.NICs) != 1 {
+		t.Fatalf("expected 1 NIC, got %d", len(m.NICs))
+	}
+	nic := m.NICs[0]
+	if nic.MACAddress != "50:6b:8d:aa:bb:01" || nic.Model != "VIRTIO" || !nic.IsConnected {
+		t.Errorf("unexpected NIC: %+v", nic)
+	}
+	if nic.SubnetUUID != "subnet-1" {
+		t.Errorf("SubnetUUID = %q, want subnet-1", nic.SubnetUUID)
+	}
+	if len(nic.IPAddresses) != 1 || nic.IPAddresses[0] != "192.168.100.101" {
+		t.Errorf("IPAddresses = %v, want [192.168.100.101]", nic.IPAddresses)
+	}
+
+	if len(m.SerialPorts) != 1 || !m.SerialPorts[0].IsConnected {
+		t.Errorf("unexpected serial ports: %+v", m.SerialPorts)
+	}
+
+	if !m.GuestToolsEnabled || !m.GuestToolsReachable || m.GuestToolsVersion != "4.1.1" {
+		t.Errorf("unexpected guest tools: enabled=%v reachable=%v version=%q", m.GuestToolsEnabled, m.GuestToolsReachable, m.GuestToolsVersion)
+	}
+	if m.GuestOSVersion != "CentOS Linux 7" {
+		t.Errorf("GuestOSVersion = %q, want CentOS Linux 7", m.GuestOSVersion)
+	}
+}
+
+// TestVMV4Raw_BootTypeVariants confirms the LegacyBoot/UefiBoot
+// $objectType discriminator (and UefiBoot's IsSecureBootEnabled flag) map
+// to the same BootType strings v3's boot_type already produces
+// (LEGACY/UEFI/SECURE_BOOT), since the validator and builder packages key
+// off those exact values.
+func TestVMV4Raw_BootTypeVariants(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "legacy",
+			raw:  `{"$objectType": "vmm.v4.ahv.config.LegacyBoot", "bootOrder": ["DISK"]}`,
+			want: "LEGACY",
+		},
+		{
+			name: "uefi",
+			raw:  `{"$objectType": "vmm.v4.ahv.config.UefiBoot", "bootOrder": ["DISK"], "isSecureBootEnabled": false}`,
+			want: "UEFI",
+		},
+		{
+			name: "secure boot",
+			raw:  `{"$objectType": "vmm.v4.ahv.config.UefiBoot", "bootOrder": ["DISK"], "isSecureBootEnabled": true}`,
+			want: "SECURE_BOOT",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := vmV4Raw{ExtID: "vm-1"}
+			full := `{"extId": "vm-1", "bootConfig": ` + c.raw + `}`
+			if err := json.Unmarshal([]byte(full), &r); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			entity := r.toEntity()
+			if entity.Spec.Resources.BootConfig.BootType != c.want {
+				t.Errorf("BootType = %q, want %q", entity.Spec.Resources.BootConfig.BootType, c.want)
+			}
+		})
+	}
+}

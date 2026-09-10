@@ -1,0 +1,116 @@
+{
+  "data": [
+    {
+      "extId": "0005f999-4567-89ab-cdef-000000000301",
+      "name": "web-01",
+      "description": "web tier",
+      "cluster": {"extId": "0005e123-4567-89ab-cdef-000000000001"},
+      "host": {"extId": "0005f123-4567-89ab-cdef-000000000101"},
+      "powerState": "ON",
+      "numSockets": 2,
+      "numCoresPerSocket": 2,
+      "numThreadsPerCore": 1,
+      "memorySizeBytes": 4294967296,
+      "machineType": "PC",
+      "hardwareClockTimezone": "UTC",
+      "isVgaConsoleEnabled": true,
+      "bootConfig": {
+        "$objectType": "vmm.v4.ahv.config.LegacyBoot",
+        "bootOrder": ["DISK", "CDROM"]
+      },
+      "disks": [
+        {
+          "extId": "d1111111-0000-0000-0000-000000000001",
+          "diskAddress": {"busType": "SCSI", "index": 0},
+          "backingInfo": {
+            "$objectType": "vmm.v4.ahv.config.VmDisk",
+            "diskSizeBytes": 42949672960,
+            "storageContainer": {"extId": "sc-0000-0001"}
+          }
+        }
+      ],
+      "cdRoms": [
+        {
+          "extId": "c1111111-0000-0000-0000-000000000001",
+          "diskAddress": {"busType": "IDE", "index": 0},
+          "backingInfo": {
+            "$objectType": "vmm.v4.ahv.config.VmDisk",
+            "dataSource": {
+              "reference": {
+                "$objectType": "vmm.v4.ahv.config.ImageReference",
+                "imageExtId": "img-0000-0001"
+              }
+            }
+          }
+        }
+      ],
+      "nics": [
+        {
+          "extId": "n1111111-0000-0000-0000-000000000001",
+          "backingInfo": {"isConnected": true, "macAddress": "50:6b:8d:aa:bb:01", "model": "VIRTIO"},
+          "networkInfo": {
+            "nicType": "NORMAL_NIC",
+            "vlanMode": "ACCESS",
+            "subnet": {"extId": "0005d123-4567-89ab-cdef-000000000001"},
+            "ipv4Info": {
+              "learnedIpAddresses": [{"value": "192.168.100.101"}]
+            }
+          }
+        }
+      ],
+      "serialPorts": [
+        {"index": 0, "isConnected": true}
+      ],
+      "guestTools": {
+        "isEnabled": true,
+        "isIsoInserted": false,
+        "isReachable": true,
+        "version": "4.1.1",
+        "guestInfo": {"guestOsFullName": "CentOS Linux 7"}
+      }
+    },
+    {
+      "extId": "0005f999-4567-89ab-cdef-000000000302",
+      "name": "win-01",
+      "description": "",
+      "cluster": {"extId": "0005e123-4567-89ab-cdef-000000000001"},
+      "host": {"extId": "0005f123-4567-89ab-cdef-000000000102"},
+      "powerState": "OFF",
+      "numSockets": 1,
+      "numCoresPerSocket": 4,
+      "numThreadsPerCore": 1,
+      "memorySizeBytes": 8589934592,
+      "machineType": "Q35",
+      "hardwareClockTimezone": "UTC",
+      "isVgaConsoleEnabled": false,
+      "bootConfig": {
+        "$objectType": "vmm.v4.ahv.config.UefiBoot",
+        "bootOrder": ["DISK"],
+        "isSecureBootEnabled": true
+      },
+      "disks": [
+        {
+          "extId": "d2222222-0000-0000-0000-000000000001",
+          "diskAddress": {"busType": "SCSI", "index": 0},
+          "backingInfo": {
+            "$objectType": "vmm.v4.ahv.config.VmDisk",
+            "diskSizeBytes": 107374182400,
+            "storageContainer": {"extId": "sc-0000-0001"}
+          }
+        }
+      ],
+      "cdRoms": [],
+      "nics": [],
+      "serialPorts": [],
+      "guestTools": {
+        "isEnabled": false,
+        "isIsoInserted": false,
+        "isReachable": false,
+        "version": ""
+      }
+    }
+  ],
+  "metadata": {
+    "totalAvailableResults": 2
+  }
+}

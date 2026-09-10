@@ -37,6 +37,7 @@ const (
 	clusterV4PageSize          = 100
 	hostV4PageSize             = 100
 	imageV4PageSize            = 100
+	vmV4PageSize               = 100
 )
 
 // Client wraps the shared pkg/lib/client/nutanix REST client with the
@@ -204,9 +205,30 @@ func (r *Client) listHosts() (entities []hostEntity, err error) {
 	}), nil
 }
 
-// List all VMs, scoped to the configured clusterUuid (if any).
+// List all VMs, scoped to the configured clusterUuid (if any). Prism
+// Element has no v4 surface (see Tier 0 in the design doc), so it stays on
+// v3; Prism Central uses the v4 vmm API. This is the highest-consequence
+// entity of the v3->v4 inventory port (a bad disk/NIC/boot-config mapping
+// can misconfigure an actual migrated VM, unlike a wrong cluster capacity
+// stat), so vmV4Raw's schema was sourced directly from Nutanix's official
+// Go SDK rather than inferred -- see vmV4Raw's doc comment for the known,
+// deliberate gaps (Categories, GuestOSID).
 func (r *Client) listVMs() (entities []vmEntity, err error) {
-	entities, err = listAllV3[vmEntity](r, "vm", "", vmPageSize)
+	switch r.prism.Mode {
+	case PrismElement:
+		entities, err = listAllV3[vmEntity](r, "vm", "", vmPageSize)
+	case PrismCentral:
+		var raw []vmV4Raw
+		raw, err = listAllV4[vmV4Raw](r, vmsV4Path, vmV4PageSize)
+		if err == nil {
+			entities = make([]vmEntity, 0, len(raw))
+			for _, rawEntity := range raw {
+				entities = append(entities, rawEntity.toEntity())
+			}
+		}
+	default:
+		return nil, liberr.New("unknown Prism mode", "mode", r.prism.Mode)
+	}
 	if err != nil {
 		return nil, err
 	}

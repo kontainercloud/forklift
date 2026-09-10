@@ -1,6 +1,8 @@
 package nutanix
 
 import (
+	"strings"
+
 	libclient "github.com/kubev2v/forklift/pkg/lib/client/nutanix"
 )
 
@@ -418,4 +420,243 @@ func coalesceBool(values ...bool) bool {
 		}
 	}
 	return false
+}
+
+// vmV4Raw is the v4 vmm API's Vm entity shape (Prism Central only). Field
+// names/nesting verified against Nutanix's own currently-published Go
+// client (vmm-go-client/models/vmm/v4/ahv/config/config_model.go) and its
+// separately-published VM API definition (vmm-go-client/api/vm_api.go,
+// confirming the list path GET /api/vmm/v4.3/ahv/config/vms used by
+// vmsV4Path), same unverified-against-a-live-server caveat as this file's
+// other v4 raw structs.
+//
+// Known gaps, both deliberate rather than guessed:
+//   - model.VM.Categories is left empty for Prism Central-sourced VMs. v4's
+//     Vm.Categories only carries a bare extId per entry
+//     (CategoryReference{ExtId}), unlike v3's metadata.categories map of
+//     key:value strings -- resolving the key:value pair needs a separate
+//     category-by-extId lookup this collector doesn't make (the same
+//     N+1-avoidance tradeoff as clusterV4Raw's capacity-stats gap).
+//   - model.VM.GuestOSID is left empty: v4 has no guestOsId-equivalent
+//     field anywhere on Vm or GuestTools, only the free-text
+//     GuestInfo.GuestOsFullName (mapped to GuestOSVersion below, which is
+//     what TemplateLabels' substring classifier already keys off -- see
+//     Tier 2 in the design doc).
+//   - Volume-group-backed disks (Disk.BackingInfo's
+//     ADSFVolumeGroupReference variant, as opposed to the normal
+//     container-backed VmDisk variant) map to a disk entry with a UUID and
+//     bus address but no size/container, since that data lives on the
+//     volume group's own disk entities, not here.
+type vmDiskAddressV4Raw struct {
+	BusType string `json:"busType"`
+	Index   int    `json:"index"`
+}
+
+// vmDiskBackingV4Raw covers both of Disk.BackingInfo's polymorphic
+// variants (VmDisk and ADSFVolumeGroupReference) in a single struct, since
+// their field sets don't collide -- avoids needing a second $objectType
+// switch on top of vmV4Raw's BootConfig one.
+type vmDiskBackingV4Raw struct {
+	DiskSizeBytes int64 `json:"diskSizeBytes"`
+	DataSource    *struct {
+		Reference *struct {
+			ImageExtID string `json:"imageExtId"`
+		} `json:"reference"`
+	} `json:"dataSource"`
+	StorageContainer *struct {
+		ExtID string `json:"extId"`
+	} `json:"storageContainer"`
+	VolumeGroupExtID string `json:"volumeGroupExtId"`
+}
+
+type vmDiskItemV4Raw struct {
+	ExtID       string              `json:"extId"`
+	DiskAddress *vmDiskAddressV4Raw `json:"diskAddress"`
+	BackingInfo *vmDiskBackingV4Raw `json:"backingInfo"`
+}
+
+type vmNicBackingV4Raw struct {
+	IsConnected bool   `json:"isConnected"`
+	MacAddress  string `json:"macAddress"`
+	Model       string `json:"model"`
+}
+
+type vmNicNetworkInfoV4Raw struct {
+	NicType  string `json:"nicType"`
+	VlanMode string `json:"vlanMode"`
+	Subnet   *struct {
+		ExtID string `json:"extId"`
+	} `json:"subnet"`
+	Ipv4Info *struct {
+		LearnedIPAddresses []struct {
+			Value string `json:"value"`
+		} `json:"learnedIpAddresses"`
+	} `json:"ipv4Info"`
+}
+
+type vmNicV4Raw struct {
+	ExtID       string                 `json:"extId"`
+	BackingInfo *vmNicBackingV4Raw     `json:"backingInfo"`
+	NetworkInfo *vmNicNetworkInfoV4Raw `json:"networkInfo"`
+}
+
+type vmV4Raw struct {
+	ExtID       string `json:"extId"`
+	ExtIDAlt    string `json:"ext_id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Cluster     *struct {
+		ExtID string `json:"extId"`
+	} `json:"cluster"`
+	Host *struct {
+		ExtID string `json:"extId"`
+	} `json:"host"`
+	PowerState            string `json:"powerState"`
+	NumSockets            int    `json:"numSockets"`
+	NumCoresPerSocket     int    `json:"numCoresPerSocket"`
+	NumThreadsPerCore     int    `json:"numThreadsPerCore"`
+	MemorySizeBytes       int64  `json:"memorySizeBytes"`
+	MachineType           string `json:"machineType"`
+	HardwareClockTimezone string `json:"hardwareClockTimezone"`
+	IsVgaConsoleEnabled   bool   `json:"isVgaConsoleEnabled"`
+	BootConfig            *struct {
+		ObjectType          string   `json:"$objectType"`
+		BootOrder           []string `json:"bootOrder"`
+		IsSecureBootEnabled *bool    `json:"isSecureBootEnabled"`
+	} `json:"bootConfig"`
+	Disks       []vmDiskItemV4Raw `json:"disks"`
+	CdRoms      []vmDiskItemV4Raw `json:"cdRoms"`
+	Nics        []vmNicV4Raw      `json:"nics"`
+	SerialPorts []struct {
+		Index       int  `json:"index"`
+		IsConnected bool `json:"isConnected"`
+	} `json:"serialPorts"`
+	GuestTools *struct {
+		IsEnabled     bool   `json:"isEnabled"`
+		IsIsoInserted bool   `json:"isIsoInserted"`
+		IsReachable   bool   `json:"isReachable"`
+		Version       string `json:"version"`
+		GuestInfo     *struct {
+			GuestOsFullName string `json:"guestOsFullName"`
+		} `json:"guestInfo"`
+	} `json:"guestTools"`
+}
+
+// vmDiskFromV4 converts one disk or cd-rom entry into the shared
+// libclient.VMDisk shape applyDisk() already knows how to render. CD-ROMs
+// are folded into the same model.Disk list as regular disks (with
+// DeviceType "CDROM"/IsCdrom true) because every downstream consumer
+// (validator, builder) already expects that v3-era mixed-list shape.
+func vmDiskFromV4(item vmDiskItemV4Raw, isCdrom bool) libclient.VMDisk {
+	disk := libclient.VMDisk{UUID: item.ExtID}
+	disk.DeviceProperties.DeviceType = "DISK"
+	if isCdrom {
+		disk.DeviceProperties.DeviceType = "CDROM"
+	}
+	if item.DiskAddress != nil {
+		disk.DeviceProperties.DiskAddress.AdapterType = item.DiskAddress.BusType
+		disk.DeviceProperties.DiskAddress.DeviceIndex = item.DiskAddress.Index
+	}
+	if item.BackingInfo != nil {
+		disk.DiskSizeBytes = item.BackingInfo.DiskSizeBytes
+		if item.BackingInfo.DataSource != nil && item.BackingInfo.DataSource.Reference != nil {
+			disk.DataSourceReference = libclient.Ref{UUID: item.BackingInfo.DataSource.Reference.ImageExtID}
+		}
+		if item.BackingInfo.StorageContainer != nil {
+			disk.StorageContainerReference = libclient.Ref{UUID: item.BackingInfo.StorageContainer.ExtID}
+		}
+	}
+	return disk
+}
+
+func (r vmV4Raw) toEntity() vmEntity {
+	entity := vmEntity{}
+	entity.Metadata.UUID = libclient.Coalesce(r.ExtID, r.ExtIDAlt)
+	entity.Metadata.Name = r.Name
+	entity.Spec.Name = r.Name
+	entity.Spec.Description = r.Description
+
+	if r.Cluster != nil {
+		entity.Spec.ClusterReference = libclient.Ref{UUID: r.Cluster.ExtID}
+	}
+	if r.Host != nil {
+		entity.Status.Resources.HostReference = libclient.Ref{UUID: r.Host.ExtID}
+	}
+
+	res := &entity.Spec.Resources
+	res.PowerState = r.PowerState
+	res.NumSockets = r.NumSockets
+	res.NumVcpusPerSocket = r.NumCoresPerSocket
+	res.NumThreadsPerCore = r.NumThreadsPerCore
+	res.MemorySizeMiB = r.MemorySizeBytes / 1024 / 1024
+	res.MachineType = r.MachineType
+	res.HardwareClockTZ = r.HardwareClockTimezone
+	res.VGAConsoleEnabled = r.IsVgaConsoleEnabled
+
+	if r.BootConfig != nil {
+		res.BootConfig.BootDeviceOrderList = r.BootConfig.BootOrder
+		switch {
+		case strings.HasSuffix(r.BootConfig.ObjectType, "UefiBoot"):
+			if r.BootConfig.IsSecureBootEnabled != nil && *r.BootConfig.IsSecureBootEnabled {
+				res.BootConfig.BootType = "SECURE_BOOT"
+			} else {
+				res.BootConfig.BootType = "UEFI"
+			}
+		case strings.HasSuffix(r.BootConfig.ObjectType, "LegacyBoot"):
+			res.BootConfig.BootType = "LEGACY"
+		}
+	}
+
+	for _, d := range r.Disks {
+		res.DiskList = append(res.DiskList, vmDiskFromV4(d, false))
+	}
+	for _, c := range r.CdRoms {
+		res.DiskList = append(res.DiskList, vmDiskFromV4(c, true))
+	}
+
+	for _, n := range r.Nics {
+		nic := libclient.VMNIC{UUID: n.ExtID}
+		if n.BackingInfo != nil {
+			nic.IsConnected = n.BackingInfo.IsConnected
+			nic.MACAddress = n.BackingInfo.MacAddress
+			nic.Model = n.BackingInfo.Model
+		}
+		if n.NetworkInfo != nil {
+			nic.NicType = n.NetworkInfo.NicType
+			nic.VlanMode = n.NetworkInfo.VlanMode
+			if n.NetworkInfo.Subnet != nil {
+				nic.SubnetReference = libclient.Ref{UUID: n.NetworkInfo.Subnet.ExtID}
+			}
+			if n.NetworkInfo.Ipv4Info != nil {
+				for _, ip := range n.NetworkInfo.Ipv4Info.LearnedIPAddresses {
+					nic.IPEndpointList = append(nic.IPEndpointList, struct {
+						IP string `json:"ip"`
+					}{IP: ip.Value})
+				}
+			}
+		}
+		res.NICList = append(res.NICList, nic)
+	}
+
+	for _, p := range r.SerialPorts {
+		res.SerialPortList = append(res.SerialPortList, libclient.VMSerialPort{
+			Index:       p.Index,
+			IsConnected: p.IsConnected,
+		})
+	}
+
+	if r.GuestTools != nil {
+		ngt := &res.GuestTools.NutanixGuestTools
+		ngt.Enabled = r.GuestTools.IsEnabled
+		ngt.IsReachable = r.GuestTools.IsReachable
+		ngt.Version = r.GuestTools.Version
+		if r.GuestTools.IsIsoInserted {
+			ngt.ISOMountState = "MOUNTED"
+		}
+		if r.GuestTools.GuestInfo != nil {
+			ngt.GuestOSVersion = r.GuestTools.GuestInfo.GuestOsFullName
+		}
+	}
+
+	return entity
 }
