@@ -841,6 +841,47 @@ not by the design itself), and the actual guest-customization logic
 itself (driver injection, static-IP config, LUKS/NBDE) once the input
 mechanism is settled.
 
+**The conversion-pod orchestration logic lives in this repo, not an
+opaque external image, 2026-09-10.** `pkg/virt-v2v/{config,conversion,
+customize,server}` and `pkg/controller/conversion/builder.go` implement
+the actual virt-v2v invocation, pod-spec construction, and domain-XML
+handling that interprets the `V2V_*` env vars `PodEnvironment` sets — this
+document previously treated that as an external contract to guess at;
+it's directly inspectable Go code. It confirms an existing, already-used
+local-file input pattern: `EnvDiskPathName`/`V2V_diskPath`, used today by
+OVA and Hyper-V (`-i disk` against a file already present in the pod's
+filesystem, e.g. Hyper-V's SMB-mounted share). This is architecturally
+the natural fit for Nutanix's Range-support-forced full-download fallback
+above: download the catalog image into the pod's filesystem first, then
+set `V2V_diskPath` to it, exactly like OVA/Hyper-V already do.
+
+**But the actual extension point providers get, `ConversionPodConfigResult`
+(`pkg/controller/plan/adapter/base/doc.go`), only carries `NodeSelector`/
+`Labels`/`Annotations` — no way to specify an extra init container or
+volume.** OVA's `PodEnvironment` can point `V2V_diskPath` at an
+already-mounted file because its source volume is mounted through some
+other, more generic mechanism outside per-provider `ConversionPodConfig`
+(not further investigated this session). Nutanix has no equivalent
+pre-mounted volume — its disk only exists as a remote HTTP(S) byte stream
+— so making `V2V_diskPath` work for Nutanix needs something new to
+actually perform the download into the pod's filesystem before virt-v2v
+runs. That "something" doesn't exist yet for any provider, and adding it
+means extending `ConversionPodConfigResult` (and
+`pkg/controller/conversion/builder.go`'s `BuildVirtV2vPod`, which every
+provider's conversion pod goes through) with an init-container/volume
+capability — a change to shared infrastructure every other provider's
+conversion pod also relies on, not a Nutanix-local addition. That's a
+meaningfully bigger and more consequential change than anything else in
+this tier, and this document has no way to validate it without deploying
+an actual conversion pod against a real cluster — which this session's
+sandbox cannot do (no OpenShift cluster, no conversion pod runtime, no
+Nutanix VM to actually migrate and check boots correctly). This is the
+concrete reason this tier stops at architecture/research rather than
+code, not effort avoidance: the risk profile (an incorrect implementation
+here can render a migrated VM unbootable, and/or destabilize the shared
+pod-building path other providers already depend on) is categorically
+different from this session's other Nutanix-local changes.
+
 ### Gap Tier 4: Warm migration / change tracking
 
 vSphere's warm migration is a real precopy/checkpoint loop backed by CBT:
@@ -1267,6 +1308,19 @@ surface anticipated there either.
   Phasing table to reflect that Phase 4's fallback is a full-download
   approach (using the already-existing
   `ConversionTempStorageClass`/`Size` fields) rather than true streaming.
+- 2026-09-10 — **Inspected the actual conversion-pod orchestration code**
+  (`pkg/virt-v2v/*`, `pkg/controller/conversion/builder.go`) rather than
+  treating it as an opaque external contract. Confirmed OVA/Hyper-V's
+  existing `V2V_diskPath` local-file pattern is the natural fit for
+  Nutanix's download-fallback path above, but found the actual extension
+  point providers get (`ConversionPodConfigResult`) has no way to specify
+  an init container or extra volume — so making the download step work
+  needs a change to shared conversion-pod-building infrastructure every
+  provider depends on, not a Nutanix-local addition. Did not implement
+  this: an incorrect change here risks both an unbootable migrated VM and
+  destabilizing other providers' already-working conversion pods, with no
+  way in this sandbox to deploy and validate an actual pod. See the
+  updated Tier 3 section.
 
 ## Drawbacks
 
