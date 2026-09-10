@@ -576,6 +576,18 @@ func (r *Collector) vms() (err error) {
 		return
 	}
 
+	// Shared-disk detection is a best-effort enrichment: if the
+	// volume_group endpoint errors (e.g. an RBAC restriction on this
+	// user), fall back to an empty set rather than failing VM collection
+	// entirely -- every disk is then treated as not shared, matching
+	// behavior before this enrichment existed.
+	sharedDiskUUIDs := map[string]bool{}
+	if volumeGroups, vgErr := r.client.listVolumeGroups(); vgErr != nil {
+		r.log.Info("Failed to list volume groups; shared-disk detection disabled for this collection pass.", "error", vgErr.Error())
+	} else {
+		sharedDiskUUIDs = sharedVMDiskUUIDs(volumeGroups)
+	}
+
 	tx, err := r.db.Begin()
 	if err != nil {
 		return
@@ -591,7 +603,7 @@ func (r *Collector) vms() (err error) {
 		}
 		m := &model.VM{}
 		entity.ApplyTo(m)
-		enrichVM(m, storageNames, networkNames)
+		enrichVM(m, storageNames, networkNames, sharedDiskUUIDs)
 		current[m.ID] = true
 		err = tx.Insert(m)
 		if err != nil {

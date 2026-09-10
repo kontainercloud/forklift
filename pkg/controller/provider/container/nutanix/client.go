@@ -22,11 +22,12 @@ const (
 // many requests as needed regardless of these values; they only bound how
 // many entities are requested per page.
 const (
-	clusterPageSize = 100
-	hostPageSize    = 1000
-	vmPageSize      = 100
-	subnetPageSize  = 500
-	imagePageSize   = 500
+	clusterPageSize     = 100
+	hostPageSize        = 1000
+	vmPageSize          = 100
+	subnetPageSize      = 500
+	imagePageSize       = 500
+	volumeGroupPageSize = 500
 	// Per-request page sizes for v4 "config"/"content" namespace endpoints.
 	// ListAllV4 pages through as many requests as needed regardless of
 	// these values; the v4 image endpoint additionally caps $limit at 100.
@@ -170,6 +171,14 @@ func (r *Client) listVMs() (entities []vmEntity, err error) {
 	return filterByMatch(entities, r.prism.ClusterUUID, func(entity vmEntity) string {
 		return entity.Spec.ClusterReference.UUID
 	}), nil
+}
+
+// List all volume groups. Not cluster-scoped: volume groups are a
+// Prism-Element/Central-wide resource, not tied to a single cluster the
+// way VMs/hosts are, so filterByMatch's per-cluster narrowing doesn't
+// apply here.
+func (r *Client) listVolumeGroups() ([]volumeGroupEntity, error) {
+	return listAllV3[volumeGroupEntity](r, "volume_group", "", volumeGroupPageSize)
 }
 
 // List all subnets (networks), scoped to the configured clusterUuid (if any).
