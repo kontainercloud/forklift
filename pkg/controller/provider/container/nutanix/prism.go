@@ -31,6 +31,11 @@ const (
 	// server. See clusterV4Raw's doc comment for a known capacity-field
 	// gap.
 	clustersV4Path = "/api/clustermgmt/v4.3/config/clusters"
+	// hostsV4Path is Prism Central's clustermgmt (v4) global host list
+	// endpoint (not the per-cluster-nested variant that also exists).
+	// Same version-pinning/unverified-against-a-live-server caveat as the
+	// other v4 paths above.
+	hostsV4Path = "/api/clustermgmt/v4.3/config/hosts"
 )
 
 // PrismMode identifies whether the provider URL targets Prism Central or Element.

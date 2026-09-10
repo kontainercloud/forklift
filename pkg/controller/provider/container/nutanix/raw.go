@@ -304,6 +304,89 @@ func (r clusterV4Raw) toEntity() clusterEntity {
 	return entity
 }
 
+// hostV4Raw is the v4 clustermgmt API's Host entity shape (Prism Central
+// only). Field names/nesting verified against Nutanix's own currently-
+// published Go client (clustermgmt-go-client/models/clustermgmt/v4/
+// config/config_model.go), not guessed -- same caveat as
+// clusterV4Raw/subnetV4Raw: no lab used during development has entities
+// on this endpoint to round-trip against directly.
+//
+// model.Host.State is deliberately left unmapped (empty) here rather than
+// guessed: v4's Host has both a `maintenanceState` string field (no
+// typed enum/value list in the SDK to confirm what it actually returns)
+// and a separate `nodeStatus` enum (NORMAL/TO_BE_REMOVED/...) that is a
+// generic node-lifecycle concept, not obviously equivalent to v3's
+// status.state ("COMPLETE" etc, confirmed via a live probe -- see Tier 1
+// in the design doc). `maintenanceState` is a promising lead for closing
+// the MaintenanceMode validator gap, but wiring it needs its actual value
+// strings confirmed first, which this pass didn't do.
+type hostV4Raw struct {
+	ExtID           string `json:"extId"`
+	ExtIDAlt        string `json:"ext_id"`
+	HostName        string `json:"hostName"`
+	ClusterExtID    string `json:"clusterExtId"`
+	NodeSerial      string `json:"nodeSerial"`
+	BlockModel      string `json:"blockModel"`
+	HostType        string `json:"hostType"`
+	CpuModel        string `json:"cpuModel"`
+	CpuCapacityHz   int64  `json:"cpuCapacityHz"`
+	NumberOfCores   int    `json:"numberOfCpuCores"`
+	NumberOfSockets int    `json:"numberOfCpuSockets"`
+	NumberOfThreads int    `json:"numberOfCpuThreads"`
+	MemorySizeBytes int64  `json:"memorySizeBytes"`
+	Cluster         *struct {
+		ExtID string `json:"extId"`
+	} `json:"cluster"`
+	Hypervisor *struct {
+		FullName    string `json:"fullName"`
+		NumberOfVms int    `json:"numberOfVms"`
+	} `json:"hypervisor"`
+	Ipmi *struct {
+		IP *struct {
+			IPv4 *struct {
+				Value string `json:"value"`
+			} `json:"ipv4"`
+		} `json:"ip"`
+	} `json:"ipmi"`
+}
+
+func (r hostV4Raw) toEntity() hostEntity {
+	entity := hostEntity{}
+	uuid := libclient.Coalesce(r.ExtID, r.ExtIDAlt)
+	entity.Metadata.UUID = uuid
+	entity.Metadata.Name = r.HostName
+	entity.Status.Name = r.HostName
+
+	clusterUUID := r.ClusterExtID
+	if r.Cluster != nil && r.Cluster.ExtID != "" {
+		clusterUUID = r.Cluster.ExtID
+	}
+	entity.Spec.ClusterReference = libclient.Ref{UUID: clusterUUID}
+	entity.Status.ClusterReference = libclient.Ref{UUID: clusterUUID}
+
+	res := &entity.Status.Resources
+	res.SerialNumber = r.NodeSerial
+	res.Block.BlockModel = r.BlockModel
+	res.HostType = r.HostType
+	res.CPUModel = r.CpuModel
+	res.CPUCapacityHz = r.CpuCapacityHz
+	res.NumCpuCores = r.NumberOfCores
+	res.NumCpuSockets = r.NumberOfSockets
+	res.NumCpuThreads = r.NumberOfThreads
+	if r.MemorySizeBytes > 0 {
+		res.MemoryCapacityMiB = r.MemorySizeBytes / 1024 / 1024
+	}
+	if r.Hypervisor != nil {
+		res.Hypervisor.HypervisorFullName = r.Hypervisor.FullName
+		res.Hypervisor.NumVMs = r.Hypervisor.NumberOfVms
+	}
+	if r.Ipmi != nil && r.Ipmi.IP != nil && r.Ipmi.IP.IPv4 != nil {
+		res.IPMI.IP = r.Ipmi.IP.IPv4.Value
+	}
+
+	return entity
+}
+
 func coalesceInt(values ...int) int {
 	for _, value := range values {
 		if value != 0 {

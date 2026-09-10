@@ -549,6 +549,60 @@ func TestClientListSubnetsElement(t *testing.T) {
 // "cluster" kind used on Prism Element), and that the Prism Central
 // pseudo-cluster (clusterFunction=[PRISM_CENTRAL]) is still excluded via
 // the shared isPrismCentralCluster() check.
+// TestClientListHostsCentral verifies that listHosts() dispatches to
+// Prism Central's v4 clustermgmt global host-list endpoint (rather than
+// the v3 "host" kind used on Prism Element), fetching v4 clusters (not
+// v3) for the Prism-Central-pseudo-cluster exclusion check too.
+func TestClientListHostsCentral(t *testing.T) {
+	hostsData, err := os.ReadFile("testdata/hosts_v4_list.json")
+	if err != nil {
+		t.Fatalf("Failed to read testdata: %v", err)
+	}
+	clustersData, err := os.ReadFile("testdata/clusters_v4_list.json")
+	if err != nil {
+		t.Fatalf("Failed to read testdata: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		switch r.URL.Path {
+		case "/api/nutanix/v3/clusters/list":
+			_, _ = w.Write([]byte(`{"entities":[]}`))
+		case "/api/clustermgmt/v4.3/config/hosts":
+			if r.Method != "GET" {
+				t.Errorf("Expected GET, got %s", r.Method)
+			}
+			_, _ = w.Write(hostsData)
+		case "/api/clustermgmt/v4.3/config/clusters":
+			_, _ = w.Write(clustersData)
+		default:
+			t.Fatalf("Unexpected request path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := createTestClientWithSettings(server.URL, map[string]string{
+		api.NutanixPrismType: api.NutanixPrismCentral,
+	})
+	client.url = server.URL
+	mustConnect(t, client)
+
+	entities, err := client.listHosts()
+	if err != nil {
+		t.Fatalf("Unexpected error: %v", err)
+	}
+	if len(entities) != 3 {
+		t.Fatalf("Expected 3 hosts, got %d", len(entities))
+	}
+
+	m := &model.Host{}
+	entities[0].ApplyTo(m)
+	if m.Name != "ahv-node-01" || m.NumCpuCores != 32 || m.MemoryCapacityMiB != 262144 {
+		t.Fatalf("unexpected mapped host: %+v", m)
+	}
+}
+
 func TestClientListClustersCentral(t *testing.T) {
 	data, err := os.ReadFile("testdata/clusters_v4_list.json")
 	if err != nil {
@@ -733,7 +787,14 @@ func TestClientListClusters_ScopedToCluster(t *testing.T) {
 // TestClientListHosts_ScopedToCluster verifies that setting clusterUuid
 // scopes the hosts list to hosts belonging to that cluster.
 func TestClientListHosts_ScopedToCluster(t *testing.T) {
-	data, err := os.ReadFile("testdata/hosts_list.json")
+	// Central mode routes listHosts() through the v4 clustermgmt endpoint
+	// (see TestClientListHostsCentral), so this needs v4-shaped fixture
+	// data, not the v3 hosts_list.json.
+	hostsData, err := os.ReadFile("testdata/hosts_v4_list.json")
+	if err != nil {
+		t.Fatalf("Failed to read testdata: %v", err)
+	}
+	clustersData, err := os.ReadFile("testdata/clusters_v4_list.json")
 	if err != nil {
 		t.Fatalf("Failed to read testdata: %v", err)
 	}
@@ -741,7 +802,18 @@ func TestClientListHosts_ScopedToCluster(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(data)
+		switch r.URL.Path {
+		case "/api/nutanix/v3/clusters/list":
+			// Connect()'s own connectivity sanity check hits this
+			// regardless of Prism mode.
+			_, _ = w.Write([]byte(`{"entities":[]}`))
+		case "/api/clustermgmt/v4.3/config/hosts":
+			_, _ = w.Write(hostsData)
+		case "/api/clustermgmt/v4.3/config/clusters":
+			_, _ = w.Write(clustersData)
+		default:
+			t.Fatalf("Unexpected request path: %s", r.URL.Path)
+		}
 	}))
 	defer server.Close()
 

@@ -35,6 +35,7 @@ const (
 	storageContainerV4PageSize = 100
 	subnetV4PageSize           = 100
 	clusterV4PageSize          = 100
+	hostV4PageSize             = 100
 	imageV4PageSize            = 100
 )
 
@@ -167,11 +168,33 @@ func (r *Client) listClusters() (entities []clusterEntity, err error) {
 // belonging to Prism Central's own pseudo-cluster (i.e. its underlying
 // appliance, not a real hypervisor node) are excluded.
 func (r *Client) listHosts() (entities []hostEntity, err error) {
-	entities, err = listAllV3[hostEntity](r, "host", "", hostPageSize)
-	if err != nil {
-		return nil, err
+	var clusters []clusterEntity
+	switch r.prism.Mode {
+	case PrismElement:
+		entities, err = listAllV3[hostEntity](r, "host", "", hostPageSize)
+		if err == nil {
+			clusters, err = listAllV3[clusterEntity](r, "cluster", "", clusterPageSize)
+		}
+	case PrismCentral:
+		var rawHosts []hostV4Raw
+		rawHosts, err = listAllV4[hostV4Raw](r, hostsV4Path, hostV4PageSize)
+		if err == nil {
+			entities = make([]hostEntity, 0, len(rawHosts))
+			for _, rawEntity := range rawHosts {
+				entities = append(entities, rawEntity.toEntity())
+			}
+			var rawClusters []clusterV4Raw
+			rawClusters, err = listAllV4[clusterV4Raw](r, clustersV4Path, clusterV4PageSize)
+			if err == nil {
+				clusters = make([]clusterEntity, 0, len(rawClusters))
+				for _, rawEntity := range rawClusters {
+					clusters = append(clusters, rawEntity.toEntity())
+				}
+			}
+		}
+	default:
+		return nil, liberr.New("unknown Prism mode", "mode", r.prism.Mode)
 	}
-	clusters, err := listAllV3[clusterEntity](r, "cluster", "", clusterPageSize)
 	if err != nil {
 		return nil, err
 	}

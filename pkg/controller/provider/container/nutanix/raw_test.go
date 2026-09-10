@@ -226,3 +226,68 @@ func TestClusterV4Raw_PrismCentralPseudoClusterExcluded(t *testing.T) {
 		t.Fatalf("expected withoutPrismCentralClusters to drop it, got %+v", filtered)
 	}
 }
+
+// TestHostV4Raw_JSONShape guards against the wire schema drifting out of
+// sync with Nutanix's own published SDK (clustermgmt-go-client), for the
+// same reason clusterV4Raw/subnetV4Raw's equivalent tests exist.
+func TestHostV4Raw_JSONShape(t *testing.T) {
+	raw := `{
+		"extId": "host-1",
+		"hostName": "ahv-node-01",
+		"cluster": {"extId": "cluster-1"},
+		"nodeSerial": "SN-1",
+		"blockModel": "NX-3060-G7",
+		"cpuModel": "Intel Xeon Gold 6238",
+		"cpuCapacityHz": 88000000000,
+		"numberOfCpuCores": 32,
+		"numberOfCpuSockets": 2,
+		"numberOfCpuThreads": 64,
+		"memorySizeBytes": 274877906944,
+		"hypervisor": {"fullName": "Nutanix 20240802.100", "numberOfVms": 15},
+		"ipmi": {"ip": {"ipv4": {"value": "10.10.1.60"}}}
+	}`
+
+	var r hostV4Raw
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	entity := r.toEntity()
+
+	if entity.Metadata.UUID != "host-1" || entity.Metadata.Name != "ahv-node-01" {
+		t.Errorf("unexpected metadata: %+v", entity.Metadata)
+	}
+	if entity.clusterUUID() != "cluster-1" {
+		t.Errorf("clusterUUID() = %q, want cluster-1", entity.clusterUUID())
+	}
+
+	m := &model.Host{}
+	entity.ApplyTo(m)
+
+	if m.SerialNumber != "SN-1" {
+		t.Errorf("SerialNumber = %q, want SN-1", m.SerialNumber)
+	}
+	if m.BlockModel != "NX-3060-G7" {
+		t.Errorf("BlockModel = %q, want NX-3060-G7", m.BlockModel)
+	}
+	if m.CPUModel != "Intel Xeon Gold 6238" {
+		t.Errorf("CPUModel = %q, want Intel Xeon Gold 6238", m.CPUModel)
+	}
+	if m.CPUCapacityHz != 88000000000 {
+		t.Errorf("CPUCapacityHz = %d, want 88000000000", m.CPUCapacityHz)
+	}
+	if m.NumCpuCores != 32 || m.NumCpuSockets != 2 || m.NumCpuThreads != 64 {
+		t.Errorf("unexpected CPU topology: cores=%d sockets=%d threads=%d", m.NumCpuCores, m.NumCpuSockets, m.NumCpuThreads)
+	}
+	if m.MemoryCapacityMiB != 262144 {
+		t.Errorf("MemoryCapacityMiB = %d, want 262144 (256 GiB)", m.MemoryCapacityMiB)
+	}
+	if m.HypervisorType != "Nutanix 20240802.100" {
+		t.Errorf("HypervisorType = %q, want Nutanix 20240802.100", m.HypervisorType)
+	}
+	if m.NumVMs != 15 {
+		t.Errorf("NumVMs = %d, want 15", m.NumVMs)
+	}
+	if m.IPMIAddress != "10.10.1.60" {
+		t.Errorf("IPMIAddress = %q, want 10.10.1.60", m.IPMIAddress)
+	}
+}
