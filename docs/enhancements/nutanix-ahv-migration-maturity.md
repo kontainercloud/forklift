@@ -89,28 +89,60 @@ see-also:
    by design — that's the expected, correct outcome for a blank disk, not
    a mechanism failure.)
 
-   **Practical consequence for Phase 4:** this means Forklift's Nutanix
-   conversion pod would **not** need to run or orchestrate nbdkit itself
-   at all — it can generate a minimal libvirt domain XML pointing at the
-   existing per-disk catalog-image HTTP(S) URL (`elementHTTPSource`/
-   `centralHTTPSource` in `builder.go`) and hand that to `virt-v2v -i
-   libvirtxml`, and virt-v2v handles the nbdkit orchestration internally.
-   This preserves the "no double-copy" property this open question was
-   originally worried about losing — the disk is streamed on demand via
-   Range requests, not downloaded wholesale first. Two things remain
-   unverified rather than resolved outright: (a) whether Nutanix's actual
-   Prism Element/Central image-download endpoints support HTTP Range
-   requests (this session's spike only confirmed the *general* mechanism
-   against a Range-capable test server, and separately confirmed Range
-   support is a hard requirement — this specific server behavior needs
-   checking against a real Nutanix image download, not assumed); and (b)
-   how Basic Auth credentials (which Prism Element's image download uses)
-   should be supplied to the libvirt XML `<source>` — this spike used an
-   unauthenticated endpoint to isolate the TLS-trust variable, and didn't
-   test libvirt's `<auth>`/`<secret>` mechanism (which needs a running
-   `libvirtd` + `virsh secret-*` to resolve, not available in this
-   sandbox) or the simpler curl-native `https://user:pass@host/...`
-   embedded-credentials URL form as an alternative.
+   **Practical consequence for Phase 4, mechanism confirmed but a real
+   blocker found, 2026-09-10.** The general `-i libvirtxml` + network-disk
+   mechanism works, as above. But testing the two remaining unknowns
+   directly against real endpoints (not just this session's synthetic
+   test server) found a genuine blocker in one of them:
+
+   - **Range-request support: tested against this document's actual lab,
+     and Nutanix's real image-download endpoint does NOT support it.** A
+     real catalog image was created via the same v3 Image Service flow
+     `elementHTTPSource`/`builder.go` uses (`POST .../images` →
+     `PUT .../images/{uuid}/file` → poll for `COMPLETE`), then its
+     download endpoint (`GET /api/nutanix/v3/images/{uuid}/file`, the
+     exact URL `elementHTTPSource` builds) was probed with a `Range:
+     bytes=0-99` header. The response was `HTTP/2 200` with the *full*
+     `content-length` (2097152, not the requested 100 bytes) and **no
+     `Accept-Ranges` or `Content-Range` header at all** — confirmed on two
+     separate range requests, not a one-off. Nutanix's real endpoint
+     simply ignores the `Range` header and always returns the whole file.
+     Since nbdkit's `curl` plugin (which `-i libvirtxml` relies on
+     internally) *requires* Range support to work at all (confirmed
+     separately this session: it errors immediately against a
+     non-Range-capable server rather than degrading to a full
+     download) — **the streaming, no-double-copy path this open question
+     hoped for does not work against Nutanix's real image endpoint as it
+     exists today.** (Test image created and deleted as part of this
+     probe; the lab has zero images before and after.) This was only
+     tested against Prism Element's v3 image endpoint (this lab has no
+     Prism Central); whether Prism Central's v4 image download behaves
+     differently is untested and a reasonable next thing to check if a
+     PC environment becomes available.
+   - **Credential passing: still untested**, for an environment reason
+     rather than a design one this time. `apt-get install libvirt-clients
+     libvirt-daemon-system` succeeded, but `libvirtd` exits immediately
+     when started in this sandbox (`Failed to connect socket to
+     '/var/run/libvirt/libvirt-sock'`) — consistent with a container
+     sandbox lacking whatever kernel/cgroup features a full libvirtd
+     needs, unlike `virt-v2v`'s own direct-backend QEMU invocation (which
+     doesn't need a running daemon and worked fine). Genuinely blocked in
+     this environment, not just undone.
+
+   **Revised bottom line:** Open Question #2's core mechanism question
+   (can virt-v2v consume an HTTP(S) disk source without a full download)
+   is answered — yes, mechanically — but the practical answer for Nutanix
+   specifically is now **no, not without either a full local-storage
+   download first (regressing the "no double-copy" property this question
+   was trying to preserve, but not a new problem — this document's Design
+   Details section already names `PlanSpec.ConversionTempStorageClass`/
+   `ConversionTempStorageSize` as the fallback for exactly this case) or a
+   workaround this document hasn't identified** (e.g. nbdkit's `cache`/
+   `cow` filters combined with a different plugin, or confirming whether
+   v4's image download differs from v3's). This is a real, concrete
+   narrowing of Phase 4's remaining uncertainty — not fully resolved, but
+   now grounded in a direct test against the actual target system rather
+   than assumption in either direction.
 3. ~~Are Nutanix categories exposed via an API endpoint Forklift's collector
    isn't calling yet?~~ **Resolved during review — they already are.**
    `pkg/controller/provider/container/nutanix/resource_vm.go:40` sets
@@ -779,33 +811,35 @@ source is a first-class, documented virt-v2v input mode, verified this
 session to work end-to-end against a local streaming HTTP(S) source
 (including proper TLS/CA handling), with virt-v2v transparently
 orchestrating its own internal `nbdkit`+`cow`/`cacheextents`/`retry`
-pipeline. Nutanix already produces exactly the input this needs — a disk
-image reachable over HTTP(S) via the catalog-image mechanism
-(`elementHTTPSource`/`centralHTTPSource` in `builder.go`) — so the
-conversion pod's job would be to generate a minimal libvirt domain XML
-pointing at that same URL (Prism Element's Basic Auth or Prism Central's
-cookie-based auth would need to reach the `<source>`/`<auth>` XML somehow;
-see the open question's remaining unverified items) and hand it to
-`virt-v2v -i libvirtxml`, not to download the disk wholesale first — so
-the "no double-copy" property CDI HTTP import currently has for cold
-migrations is preservable here too. The
-provider-neutral `PlanSpec.ConversionTempStorageClass`/
-`ConversionTempStorageSize` fields (already consumed generically by
-`pkg/controller/conversion/builder.go`) remain available if a temp-storage
-fallback ever proves necessary, but nothing found this session suggests
-it's required for the streaming path.
+pipeline. **However, Nutanix's real per-disk catalog-image download
+endpoint (`elementHTTPSource`/`centralHTTPSource` in `builder.go`) was
+directly tested against this document's lab and does not support HTTP
+Range requests** — see Open Question #2's "mechanism confirmed but a real
+blocker found" update for the full test. Since nbdkit's `curl` plugin
+requires Range support to stream at all, the streaming/no-double-copy path
+this section originally proposed does not work against Nutanix's real
+image endpoint as it exists today (at least on Prism Element v3; Prism
+Central v4 is untested). The fallback is a full local-storage download
+before invoking virt-v2v, which regresses the "no double-copy" property
+but isn't a new problem to solve — the provider-neutral
+`PlanSpec.ConversionTempStorageClass`/`ConversionTempStorageSize` fields
+(already consumed generically by `pkg/controller/conversion/builder.go`)
+exist for exactly this case.
 
-**Estimated effort:** large, but the single biggest uncertainty (whether
-virt-v2v could consume Nutanix's HTTP disk source at all, without a
-double-copy) is now resolved rather than open. What's left before this
-tier can be scoped as `implementable`: confirming Nutanix's real
-image-download endpoints support HTTP Range requests (a hard requirement
-for the streaming path, confirmed this session but not yet checked against
-a real Nutanix response), working out how to pass Prism's Basic
-Auth/cookie credentials through the libvirt XML `<source>`/`<auth>`
-mechanism (or via an embedded-credentials URL, not yet tested), and the
-actual guest-customization logic itself (driver injection, static-IP
-config, LUKS/NBDE) once the input mechanism is wired up.
+**Estimated effort:** large, and the specific uncertainty this section
+used to carry (could virt-v2v consume Nutanix's HTTP disk source at all)
+is now answered concretely: mechanically yes, but not without a full
+download first, given the real Range-support finding above. What's left
+before this tier can be scoped as `implementable`: deciding whether the
+full-download fallback is acceptable for a first version or whether a
+Range-support workaround should be pursued (e.g. checking Prism Central's
+v4 image download behavior, or an alternate nbdkit filter/plugin
+combination), confirming how Prism's Basic Auth/cookie credentials get
+passed through the libvirt XML `<source>`/`<auth>` mechanism (still
+untested — blocked in this session's sandbox by `libvirtd` not starting,
+not by the design itself), and the actual guest-customization logic
+itself (driver injection, static-IP config, LUKS/NBDE) once the input
+mechanism is settled.
 
 ### Gap Tier 4: Warm migration / change tracking
 
@@ -979,7 +1013,7 @@ Proposed Phasing below).
 | Phase 1 | Tier 0 legacy API migration (v3/v2.0 → v4 for cluster/host/VM/subnet inventory, Prism Element image/storage-container handling, and the v3-based VM lifecycle calls in `client.go` — `getVM`, `setPowerState`, `transitionPowerState`) — **VM lifecycle done 2026-09-10**; inventory-collector listing (cluster/host/VM/subnet) still open, now GA-confirmed but not yet ported | — | Yes |
 | Phase 2 | Tier 1 validator correctness + `validator_test.go` + compatibility-matrix docs update — **done 2026-09-10** | Benefits from Phase 1 landing first (shares the same client code) but not strictly blocked on it | Yes |
 | Phase 3 | Tier 2 items with no external dependency: OS/Preference mapping, shared/excluded-disk model extension + validation, category→label mapping — **done 2026-09-10** | Not strictly blocked on Phase 2, but the shared/excluded-disk validator work benefits from landing after it (same test-fixture patterns) | Yes |
-| Phase 4 | Tier 3 guest customization (conversion pod) | Open Question #2 is now resolved (see Tier 3), narrowing what's left to: confirming Range-request support on Nutanix's real image-download endpoints, and working out Basic Auth/cookie credential passing through the libvirt XML `<source>`/`<auth>` mechanism | Partially unblocked — the core feasibility question is answered; two narrower items remain before implementation can start |
+| Phase 4 | Tier 3 guest customization (conversion pod) | Open Question #2 is resolved (see Tier 3): the mechanism works, but Nutanix's real image endpoint doesn't support the Range requests it needs, so a full-download fallback is required instead of true streaming. Credential passing through libvirt XML `<auth>` is still untested (sandbox-blocked, not design-blocked) | Unblocked enough to scope a first version around the download-fallback path; still needs a credential-passing decision and the guest-customization logic itself |
 | Phase 5 | Tier 4 warm migration | Phase 0's Nutanix partner-access and version-confirmation results, and reuses Phase 4's disk-access patterns if any | No — blocked on Phase 0, likely also on Phase 4 |
 | Ongoing | Tier 5 tooling/CLI/tests/docs — compatibility docs and `nutanix-setup-guide.md` **done 2026-09-10** | Tracks alongside each phase above | N/A |
 
@@ -1214,6 +1248,25 @@ surface anticipated there either.
   (cluster/host/VM/subnet) for a live v4-capable environment, given the
   size and mapping risk of reshaping four large auto-generated v4 models
   blind. See the updated Tier 0 section.
+- 2026-09-10 — **Tested Open Question #2's two remaining items directly
+  against real systems, rather than leaving them as assumptions.**
+  Created a real catalog image on this document's lab via the same v3
+  Image Service flow `elementHTTPSource` uses, then probed its download
+  endpoint with an HTTP `Range` header: the response was `200` with the
+  full content length and no `Accept-Ranges`/`Content-Range` headers —
+  Nutanix's real image endpoint does not support Range requests (test
+  image deleted immediately after; the lab has zero images before and
+  after). Since nbdkit's `curl` plugin requires Range support to stream,
+  this means the no-double-copy streaming path Open Question #2 hoped
+  for does not work against Nutanix's real endpoint as it exists today —
+  a genuine, concrete blocker found by testing, not assumed in either
+  direction. Separately attempted the credential-passing test
+  (`libvirt-clients`/`libvirt-daemon-system` installed successfully, but
+  `libvirtd` fails to start in this sandbox — environment-blocked, not a
+  design question). Updated Open Question #2, Tier 3, and the Proposed
+  Phasing table to reflect that Phase 4's fallback is a full-download
+  approach (using the already-existing
+  `ConversionTempStorageClass`/`Size` fields) rather than true streaming.
 
 ## Drawbacks
 
